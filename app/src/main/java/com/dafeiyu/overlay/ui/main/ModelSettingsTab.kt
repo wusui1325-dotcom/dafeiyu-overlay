@@ -188,7 +188,7 @@ fun ModelSettingsTab(
                 title = "Max Tokens 上限",
                 valueLabel = "${config.maxTokens}",
                 value = config.maxTokens.toFloat(),
-                valueRange = 64f..2048f,
+                valueRange = 128f..4096f,
                 onValueChange = { v -> configStore.update { it.copy(maxTokens = v.roundToInt()) } }
             )
             Spacer(modifier = Modifier.height(6.dp))

@@ -121,7 +121,105 @@ object DeepSeekClient {
         }
 
         val url = "${normalizedBaseUrl(config.baseUrl)}/chat/completions"
+        val modelId = config.modelId.trim().ifEmpty { AppConfig.DEFAULT_MODEL }
 
+        // DeepSeek V4 defaults to thinking=high when reasoning_effort is omitted.
+        // Always pass reasoning_effort explicitly (including "none"), and ensure sufficient
+        // max_tokens headroom whenever thinking mode is enabled so reasoning_content never
+        // exhausts the budget before message.content is emitted.
+        val isThinkingRequested = config.reasoningEffort != ReasoningEffort.NONE ||
+            modelId.contains("reasoner", ignoreCase = true)
+        val initialMaxTokens = if (isThinkingRequested) {
+            maxOf(config.maxTokens, 2048)
+        } else {
+            maxOf(config.maxTokens, 512)
+        }
+
+        val firstAttempt = executeVisionRequest(
+            url = url,
+            apiKey = cleanKey,
+            modelId = modelId,
+            systemPrompt = systemPrompt,
+            userPrompt = userPrompt,
+            base64Jpeg = base64Jpeg,
+            temperature = config.temperature.toDouble(),
+            maxTokens = initialMaxTokens,
+            reasoningEffort = config.reasoningEffort.apiValue
+        )
+
+        when (firstAttempt) {
+            is AttemptOutcome.Success -> ApiResult.Success(firstAttempt.content)
+
+            // Some third-party OpenAI-compatible gateways reject unknown "reasoning_effort".
+            is AttemptOutcome.UnsupportedReasoningParam -> {
+                when (
+                    val retry = executeVisionRequest(
+                        url = url,
+                        apiKey = cleanKey,
+                        modelId = modelId,
+                        systemPrompt = systemPrompt,
+                        userPrompt = userPrompt,
+                        base64Jpeg = base64Jpeg,
+                        temperature = config.temperature.toDouble(),
+                        maxTokens = maxOf(initialMaxTokens, 2048),
+                        reasoningEffort = null
+                    )
+                ) {
+                    is AttemptOutcome.Success -> ApiResult.Success(retry.content)
+                    is AttemptOutcome.EmptyContent -> ApiResult.Error(formatEmptyError(retry.finishReason))
+                    is AttemptOutcome.HttpError -> ApiResult.Error(retry.message, retry.code)
+                    is AttemptOutcome.UnsupportedReasoningParam -> ApiResult.Error(retry.message, retry.code)
+                    is AttemptOutcome.NetworkError -> ApiResult.Error(retry.message)
+                }
+            }
+
+            // If empty content occurred (e.g., finish_reason=length or transient blank output),
+            // automatically retry once with reasoning_effort="none" and generous max_tokens.
+            is AttemptOutcome.EmptyContent -> {
+                val retry = executeVisionRequest(
+                    url = url,
+                    apiKey = cleanKey,
+                    modelId = modelId,
+                    systemPrompt = systemPrompt,
+                    userPrompt = "$userPrompt\n請務必直接給出最終答案，不要留空。",
+                    base64Jpeg = base64Jpeg,
+                    temperature = config.temperature.toDouble().coerceAtMost(0.3),
+                    maxTokens = maxOf(config.maxTokens, 2048),
+                    reasoningEffort = ReasoningEffort.NONE.apiValue
+                )
+                when (retry) {
+                    is AttemptOutcome.Success -> ApiResult.Success(retry.content)
+                    is AttemptOutcome.EmptyContent -> ApiResult.Error(formatEmptyError(retry.finishReason))
+                    is AttemptOutcome.HttpError -> ApiResult.Error(retry.message, retry.code)
+                    is AttemptOutcome.UnsupportedReasoningParam -> ApiResult.Error(retry.message, retry.code)
+                    is AttemptOutcome.NetworkError -> ApiResult.Error(retry.message)
+                }
+            }
+
+            is AttemptOutcome.HttpError -> ApiResult.Error(firstAttempt.message, firstAttempt.code)
+            is AttemptOutcome.NetworkError -> ApiResult.Error(firstAttempt.message)
+        }
+    }
+
+    private sealed class AttemptOutcome {
+        data class Success(val content: String) : AttemptOutcome()
+        data class EmptyContent(val finishReason: String) : AttemptOutcome()
+        data class UnsupportedReasoningParam(val message: String, val code: Int) : AttemptOutcome()
+        data class HttpError(val message: String, val code: Int) : AttemptOutcome()
+        data class NetworkError(val message: String) : AttemptOutcome()
+    }
+
+    private fun executeVisionRequest(
+        url: String,
+        apiKey: String,
+        modelId: String,
+        systemPrompt: String,
+        userPrompt: String,
+        base64Jpeg: String,
+        temperature: Double,
+        maxTokens: Int,
+        reasoningEffort: String?
+    ): AttemptOutcome {
         val userContent = JSONArray().apply {
             put(
                 JSONObject().apply {
@@ -158,45 +256,82 @@ object DeepSeekClient {
         }
 
         val payload = JSONObject().apply {
-            put("model", config.modelId.trim().ifEmpty { AppConfig.DEFAULT_MODEL })
+            put("model", modelId)
             put("messages", messages)
-            put("temperature", config.temperature.toDouble())
-            put("max_tokens", config.maxTokens)
+            put("temperature", temperature)
+            put("max_tokens", maxTokens)
             put("stream", false)
-            if (config.reasoningEffort != ReasoningEffort.NONE) {
-                put("reasoning_effort", config.reasoningEffort.apiValue)
+            if (reasoningEffort != null) {
+                put("reasoning_effort", reasoningEffort)
             }
         }
 
         val request = Request.Builder()
             .url(url)
-            .header("Authorization", "Bearer $cleanKey")
+            .header("Authorization", "Bearer $apiKey")
             .header("Content-Type", "application/json")
             .post(payload.toString().toRequestBody(jsonMediaType))
             .build()
 
-        try {
+        return try {
             client.newCall(request).execute().use { resp ->
                 val body = resp.body?.string().orEmpty()
                 if (!resp.isSuccessful) {
-                    return@withContext ApiResult.Error(
-                        parseErrorMessage(body, resp.code),
-                        resp.code
-                    )
+                    val errMsg = parseErrorMessage(body, resp.code)
+                    if (resp.code == 400 &&
+                        reasoningEffort != null &&
+                        body.contains("reasoning_effort", ignoreCase = true)
+                    ) {
+                        return AttemptOutcome.UnsupportedReasoningParam(errMsg, resp.code)
+                    }
+                    return AttemptOutcome.HttpError(errMsg, resp.code)
                 }
+
                 val root = JSONObject(body)
-                val choices = root.optJSONArray("choices")
-                val first = choices?.optJSONObject(0)
+                val first = root.optJSONArray("choices")?.optJSONObject(0)
+                val finishReason = first?.optString("finish_reason").orEmpty()
                 val message = first?.optJSONObject("message")
-                val content = message?.optString("content").orEmpty().trim()
-                if (content.isEmpty()) {
-                    ApiResult.Error("DeepSeek 回傳空白內容")
+                val content = extractMessageContent(message)
+
+                if (content.isNotEmpty()) {
+                    AttemptOutcome.Success(content)
                 } else {
-                    ApiResult.Success(content)
+                    AttemptOutcome.EmptyContent(finishReason)
                 }
             }
         } catch (e: Exception) {
-            ApiResult.Error("API 請求錯誤：${e.localizedMessage ?: e.javaClass.simpleName}")
+            AttemptOutcome.NetworkError("API 請求錯誤：${e.localizedMessage ?: e.javaClass.simpleName}")
+        }
+    }
+
+    private fun extractMessageContent(message: JSONObject?): String {
+        if (message == null || message.isNull("content")) return ""
+        val raw = message.opt("content") ?: return ""
+        return when (raw) {
+            is String -> raw.trim()
+            is JSONArray -> {
+                buildString {
+                    for (i in 0 until raw.length()) {
+                        val part = raw.optJSONObject(i) ?: continue
+                        if (!part.isNull("text")) {
+                            val text = part.optString("text", "")
+                            if (text.isNotBlank()) {
+                                if (isNotEmpty()) append('\n')
+                                append(text.trim())
+                            }
+                        }
+                    }
+                }.trim()
+            }
+            else -> ""
+        }
+    }
+
+    private fun formatEmptyError(finishReason: String): String {
+        return if (finishReason.isNotBlank()) {
+            "DeepSeek 回傳空白內容 (finish_reason=$finishReason)"
+        } else {
+            "DeepSeek 回傳空白內容"
         }
     }
 
@@ -231,7 +366,6 @@ object DeepSeekClient {
 
     fun parseChoiceIndices(raw: String, optionCount: Int): List<Int> {
         val cleaned = raw.trim()
-        // 1. Try numeric indices first (e.g., "2", "1, 3", "1、3")
         val numbers = Regex("\\d+")
             .findAll(cleaned)
             .mapNotNull { it.value.toIntOrNull() }
@@ -240,7 +374,6 @@ object DeepSeekClient {
             .toList()
         if (numbers.isNotEmpty()) return numbers
 
-        // 2. Fallback: parse letters A-J if the model answered with letters
         val letters = Regex("[A-Ja-j]")
             .findAll(cleaned)
             .map { it.value.uppercase()[0] - 'A' + 1 }

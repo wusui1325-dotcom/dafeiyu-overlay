@@ -76,7 +76,7 @@ class ConfigStore(context: Context) {
             modelId = prefs.getString(KEY_MODEL_ID, AppConfig.DEFAULT_MODEL)
                 ?.ifBlank { AppConfig.DEFAULT_MODEL } ?: AppConfig.DEFAULT_MODEL,
             temperature = prefs.getFloat(KEY_TEMPERATURE, 0.1f).coerceIn(0f, 2f),
-            maxTokens = prefs.getInt(KEY_MAX_TOKENS, 512).coerceIn(32, 4096),
+            maxTokens = prefs.getInt(KEY_MAX_TOKENS, 1024).coerceIn(32, 4096),
             reasoningEffort = reasoningEffort,
             cachedModels = cachedModels,
             appDarkTheme = prefs.getBoolean(KEY_APP_DARK_THEME, false),

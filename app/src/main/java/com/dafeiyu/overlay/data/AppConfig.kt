@@ -29,7 +29,7 @@ data class AppConfig(
     val baseUrl: String = DEFAULT_BASE_URL,
     val modelId: String = DEFAULT_MODEL,
     val temperature: Float = 0.1f,
-    val maxTokens: Int = 512,
+    val maxTokens: Int = 1024,
     val reasoningEffort: ReasoningEffort = ReasoningEffort.NONE,
     val cachedModels: List<String> = DEFAULT_PRESET_MODELS,
 
