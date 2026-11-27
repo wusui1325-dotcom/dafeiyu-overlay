@@ -62,6 +62,20 @@ data class ReleaseInfo(
     val apkUrl: String?
 )
 
+data class AgentAction(
+    val type: String, // tap, input, scroll_down, scroll_up
+    val elementId: Int?,
+    val x: Int,
+    val y: Int,
+    val text: String,
+    val description: String
+)
+
+data class AgentCommandResult(
+    val actions: List<AgentAction>,
+    val replyText: String
+)
+
 object DeepSeekClient {
 
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
@@ -120,14 +134,14 @@ object DeepSeekClient {
             }
         }
 
-    suspend fun solveInput(config: AppConfig, base64Jpeg: String): ApiResult<InputSolveResult> {
+    suspend fun solveInput(config: AppConfig, base64Jpeg: String, pinnedImages: List<String> = emptyList()): ApiResult<InputSolveResult> {
         val baseSystemPrompt = config.inputSystemPrompt.ifBlank { AppConfig.DEFAULT_INPUT_SYSTEM_PROMPT }
         val baseUserPrompt = "請觀察截圖中需要填寫的輸入框或題目，只輸出應該輸入的最終內容文字，不要任何解釋或額外符號。"
 
         val validCards = config.envCards.filter { it.name.isNotBlank() }
         val finalUserPrompt = baseUserPrompt + buildEnvCardsPromptSuffix(validCards)
 
-        return when (val result = callVisionCompletion(config, baseSystemPrompt, finalUserPrompt, base64Jpeg)) {
+        return when (val result = callVisionCompletion(config, baseSystemPrompt, finalUserPrompt, base64Jpeg, pinnedImages)) {
             is ApiResult.Success -> {
                 val cleanedRaw = cleanInputAnswer(result.data)
                 ApiResult.Success(resolveEnvCards(cleanedRaw, validCards))
@@ -175,13 +189,13 @@ object DeepSeekClient {
         return callVisionCompletion(config, systemPrompt, userPrompt, base64Jpeg)
     }
 
-    suspend fun solveQuickAsk(config: AppConfig, base64Jpeg: String): ApiResult<String> {
+    suspend fun solveQuickAsk(config: AppConfig, base64Jpeg: String, pinnedImages: List<String> = emptyList()): ApiResult<String> {
         val systemPrompt =
             "你是精煉高效的螢幕視覺助手。請根據截圖中的題目、文章、報錯或內容，" +
                 "以繁體中文直接給出最核心的解答、重點摘要或翻譯。" +
                 "請保持簡潔清晰（約 2 至 6 行），避免冗長廢話。"
         val userPrompt = "請快速解析這張截圖的核心內容或直接給出解答。"
-        return callVisionCompletion(config, systemPrompt, userPrompt, base64Jpeg)
+        return callVisionCompletion(config, systemPrompt, userPrompt, base64Jpeg, pinnedImages)
     }
 
     suspend fun checkLatestRelease(): ApiResult<ReleaseInfo> = withContext(Dispatchers.IO) {
@@ -226,14 +240,15 @@ object DeepSeekClient {
     suspend fun solveChoice(
         config: AppConfig,
         base64Jpeg: String,
-        optionCount: Int
+        optionCount: Int,
+        pinnedImages: List<String> = emptyList()
     ): ApiResult<List<Int>> {
         val template = config.choiceSystemPrompt.ifBlank { AppConfig.DEFAULT_CHOICE_SYSTEM_PROMPT }
         val systemPrompt = template.replace("{COUNT}", optionCount.toString())
         val userPrompt =
             "畫面上共有 $optionCount 個選項，請依「從上往下、從左往右」順序編號 1 至 $optionCount。" +
                 "請判斷單選或多選正確答案，只輸出數字編號（多選以英文逗號分隔，例如 1,3）。"
-        return when (val result = callVisionCompletion(config, systemPrompt, userPrompt, base64Jpeg)) {
+        return when (val result = callVisionCompletion(config, systemPrompt, userPrompt, base64Jpeg, pinnedImages)) {
             is ApiResult.Success -> {
                 val parsed = parseChoiceIndices(result.data, optionCount)
                 if (parsed.isEmpty()) {
@@ -247,6 +262,145 @@ object DeepSeekClient {
     }
 
     /**
+     * Natural Language Screen Agent: takes ANY freeform user instruction and returns
+     * either executable cross-device GUI actions (tap/input/scroll) and/or a direct answer.
+     */
+    suspend fun executeFreeformCommand(
+        config: AppConfig,
+        base64Jpeg: String,
+        elements: List<UiElementSnapshot>,
+        instruction: String,
+        pinnedImages: List<String> = emptyList()
+    ): ApiResult<AgentCommandResult> {
+        val validCards = config.envCards.filter { it.name.isNotBlank() }
+        val elementsText = if (elements.isNotEmpty()) {
+            buildString {
+                append("
+【無障礙互動元件清單（0..1000 歸一化座標）】
+")
+                elements.forEach { el ->
+                    append("#${el.id} (${el.kind}) "${el.label}" center=(${el.normX},${el.normY})
+")
+                }
+            }
+        } else ""
+
+        val systemPrompt = """
+你是 Android 螢幕自由指令 AI 代理人。使用者會下達一句自然語言指令。
+請根據截圖與互動元件清單，只輸出嚴格合法的單一 JSON 物件（勿加 Markdown 圍欄）：
+{
+  "actions": [
+    { "type": "tap | input | scroll_down | scroll_up", "element_id": 12, "x": 500, "y": 400, "text": "僅 input 填寫（可用 [卡片名字]）", "description": "簡短步驟說明" }
+  ],
+  "reply_text": "若使用者要求總結、翻譯、解答或分析，將完整回覆寫於此；若純粹操作介面則留空字串"
+}
+規則：
+- 所有座標為 0..1000 歸一化整數；若對應互動元件清單務必填寫 element_id。
+- 若指令只需回答問題／總結／翻譯，actions 回傳空陣列 [] 並將回答寫在 reply_text。
+- 若指令要求點擊、填表或滑動，依執行順序填入 actions（最多 8 步）。
+        """.trimIndent()
+
+        val userPrompt = "使用者指令：$instruction" + elementsText + buildEnvCardsPromptSuffix(validCards)
+
+        return when (val res = callVisionCompletion(config, systemPrompt, userPrompt, base64Jpeg, pinnedImages)) {
+            is ApiResult.Success -> parseAgentCommandJson(res.data)
+            is ApiResult.Error -> res
+        }
+    }
+
+    private fun parseAgentCommandJson(raw: String): ApiResult<AgentCommandResult> {
+        return try {
+            var cleaned = raw.trim()
+            if (cleaned.startsWith("```")) {
+                cleaned = cleaned.removePrefix("```")
+                val nl = cleaned.indexOf('
+')
+                if (nl >= 0) cleaned = cleaned.substring(nl + 1)
+                cleaned = cleaned.removeSuffix("```").trim()
+            }
+            val startIdx = cleaned.indexOf('{')
+            val endIdx = cleaned.lastIndexOf('}')
+            if (startIdx < 0 || endIdx <= startIdx) {
+                return ApiResult.Success(AgentCommandResult(emptyList(), cleaned))
+            }
+            val root = JSONObject(cleaned.substring(startIdx, endIdx + 1))
+            val reply = if (root.isNull("reply_text")) "" else root.optString("reply_text", "").trim()
+            val arr = root.optJSONArray("actions") ?: JSONArray()
+            val actions = buildList {
+                for (i in 0 until arr.length().coerceAtMost(8)) {
+                    val obj = arr.optJSONObject(i) ?: continue
+                    val type = obj.optString("type", "").trim().lowercase()
+                    if (type !in listOf("tap", "input", "scroll_down", "scroll_up")) continue
+                    val elId = if (obj.isNull("element_id")) null else obj.optInt("element_id", -1).takeIf { it > 0 }
+                    val x = obj.optInt("x", 500).coerceIn(0, 1000)
+                    val y = obj.optInt("y", 500).coerceIn(0, 1000)
+                    val text = if (obj.isNull("text")) "" else obj.optString("text", "").trim()
+                    val desc = obj.optString("description", type).trim()
+                    add(AgentAction(type = type, elementId = elId, x = x, y = y, text = text, description = desc))
+                }
+            }
+            ApiResult.Success(AgentCommandResult(actions = actions, replyText = reply))
+        } catch (e: Exception) {
+            ApiResult.Error("解析指令回應失敗：${e.localizedMessage ?: e.javaClass.simpleName}")
+        }
+    }
+
+    /**
+     * Smart Contextual Reply: reads current chat/email screenshot and generates 3 tailored replies
+     * in the chosen tone.
+     */
+    suspend fun solveSmartReply(
+        config: AppConfig,
+        base64Jpeg: String,
+        tone: String,
+        pinnedImages: List<String> = emptyList()
+    ): ApiResult<List<String>> {
+        val systemPrompt = """
+你是頂尖的高情商通訊回覆助手。請閱讀截圖中的聊天對話、留言或電郵上下文，
+依照指定語氣生成 3 個不同角度、可直接發送的自然回覆選項（配合截圖語言，預設繁體中文）。
+只輸出嚴格合法的 JSON 陣列（3 個字串），例如：["回覆一", "回覆二", "回覆三"]，不要任何解釋或 Markdown。
+        """.trimIndent()
+        val userPrompt = "請以「$tone」的語氣，針對畫面中的最新訊息生成 3 個可直接發送的回覆。"
+        return when (val res = callVisionCompletion(config, systemPrompt, userPrompt, base64Jpeg, pinnedImages)) {
+            is ApiResult.Success -> {
+                val list = parseReplyList(res.data)
+                if (list.isEmpty()) ApiResult.Error("無法解析回覆選項")
+                else ApiResult.Success(list)
+            }
+            is ApiResult.Error -> res
+        }
+    }
+
+    private fun parseReplyList(raw: String): List<String> {
+        var cleaned = raw.trim()
+        if (cleaned.startsWith("```")) {
+            cleaned = cleaned.removePrefix("```")
+            val nl = cleaned.indexOf('
+')
+            if (nl >= 0) cleaned = cleaned.substring(nl + 1)
+            cleaned = cleaned.removeSuffix("```").trim()
+        }
+        return try {
+            val s = cleaned.indexOf('[')
+            val e = cleaned.lastIndexOf(']')
+            if (s >= 0 && e > s) {
+                val arr = JSONArray(cleaned.substring(s, e + 1))
+                buildList {
+                    for (i in 0 until arr.length()) {
+                        val item = arr.optString(i).trim()
+                        if (item.isNotEmpty()) add(item)
+                    }
+                }.take(3)
+            } else {
+                cleaned.lines().map { it.trim().removePrefix("-").removePrefix("•").trim() }
+                    .filter { it.isNotEmpty() }.take(3)
+            }
+        } catch (_: Throwable) {
+            cleaned.lines().map { it.trim() }.filter { it.isNotEmpty() }.take(3)
+        }
+    }
+
+    /**
      * Experimental Full Auto-Loop analyzer.
      * Uses normalized 0..1000 coordinates + optional live Accessibility UI element IDs
      * so taps are pixel-accurate across all screen sizes, DPIs, notches, and aspect ratios.
@@ -256,7 +410,8 @@ object DeepSeekClient {
         base64Jpeg: String,
         elements: List<UiElementSnapshot>,
         completedInRound: List<String>,
-        roundNumber: Int
+        roundNumber: Int,
+        pinnedImages: List<String> = emptyList()
     ): ApiResult<AutoLoopAnalysis> {
         val validCards = config.envCards.filter { it.name.isNotBlank() }
 
@@ -320,7 +475,7 @@ JSON 格式：
             completedText +
             buildEnvCardsPromptSuffix(validCards)
 
-        return when (val result = callVisionCompletion(config, systemPrompt, userPrompt, base64Jpeg)) {
+        return when (val result = callVisionCompletion(config, systemPrompt, userPrompt, base64Jpeg, pinnedImages)) {
             is ApiResult.Success -> parseAutoLoopJson(result.data)
             is ApiResult.Error -> result
         }
@@ -415,7 +570,8 @@ JSON 格式：
         config: AppConfig,
         systemPrompt: String,
         userPrompt: String,
-        base64Jpeg: String
+        base64Jpeg: String,
+        pinnedImages: List<String> = emptyList()
     ): ApiResult<String> = withContext(Dispatchers.IO) {
         val cleanKey = config.apiKey.trim()
         if (cleanKey.isEmpty()) {
@@ -436,6 +592,7 @@ JSON 格式：
             systemPrompt = systemPrompt,
             userPrompt = userPrompt,
             base64Jpeg = base64Jpeg,
+            pinnedImages = pinnedImages,
             temperature = config.temperature.toDouble(),
             maxTokens = initialMaxTokens,
             reasoningEffort = config.reasoningEffort.apiValue,
@@ -510,12 +667,26 @@ JSON 格式：
         systemPrompt: String,
         userPrompt: String,
         base64Jpeg: String,
+        pinnedImages: List<String>,
         temperature: Double,
         maxTokens: Int,
         reasoningEffort: String?,
         disableThinking: Boolean
     ): AttemptOutcome {
         val userContent = JSONArray().apply {
+            pinnedImages.forEach { pinnedB64 ->
+                put(
+                    JSONObject().apply {
+                        put("type", "image_url")
+                        put(
+                            "image_url",
+                            JSONObject().apply {
+                                put("url", "data:image/jpeg;base64,$pinnedB64")
+                            }
+                        )
+                    }
+                )
+            }
             put(
                 JSONObject().apply {
                     put("type", "image_url")
@@ -527,10 +698,15 @@ JSON 格式：
                     )
                 }
             )
+            val pinNote = if (pinnedImages.isNotEmpty()) {
+                "【跨頁參考記憶】前面 ${pinnedImages.size} 張圖片為使用者釘選的參考頁面，最後一張為目前操作畫面，請結合參考頁資訊作答。
+
+"
+            } else ""
             put(
                 JSONObject().apply {
                     put("type", "text")
-                    put("text", userPrompt)
+                    put("text", pinNote + userPrompt)
                 }
             )
         }

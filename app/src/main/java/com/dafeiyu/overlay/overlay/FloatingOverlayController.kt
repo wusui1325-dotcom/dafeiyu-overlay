@@ -22,6 +22,7 @@ import com.dafeiyu.overlay.MainActivity
 import com.dafeiyu.overlay.R
 import com.dafeiyu.overlay.data.AppConfig
 import android.graphics.drawable.GradientDrawable
+import android.widget.EditText
 import android.widget.ScrollView
 import com.dafeiyu.overlay.data.ConfigStore
 import com.dafeiyu.overlay.data.HistoryStore
@@ -61,6 +62,9 @@ class FloatingOverlayController(
     private var answerCardView: View? = null
     private var captureCanvasView: MonochromeOverlayViews.CoordinateCaptureCanvasView? = null
     private var regionSelectView: MonochromeOverlayViews.RegionSelectCanvasView? = null
+    private var commandBarView: View? = null
+    private var smartReplyView: View? = null
+    private val pinnedScreenshots = mutableListOf<String>()
     private var longPressJob: Job? = null
 
     private var activeWorkflowJob: Job? = null
@@ -313,116 +317,206 @@ class FloatingOverlayController(
         header.addView(closeBtn)
         container.addView(header)
 
-        // Primary Mode Buttons: 輸入類 & 選擇類
+        // Row 1: Core 大肥魚 (輸入類 | 選擇類)
+        val row1 = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = MonochromeOverlayViews.dp(context, 8) }
+        }
         val inputBtn = MonochromeOverlayViews.buildIconButton(
             context = context,
             iconRes = R.drawable.ic_edit,
-            label = "輸入類・點選輸入框",
+            label = "輸入類",
             bgColor = palette.accentBg,
-            fgColor = palette.accentFg
+            fgColor = palette.accentFg,
+            compact = true
         ) {
             hapticTick()
-            removeViewSafe(menuView)
-            menuView = null
+            removeViewSafe(menuView); menuView = null
             startInputWorkflow()
         }.apply {
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply {
-                bottomMargin = MonochromeOverlayViews.dp(context, 8)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = MonochromeOverlayViews.dp(context, 6)
             }
         }
-        container.addView(inputBtn)
-
         val choiceBtn = MonochromeOverlayViews.buildIconButton(
             context = context,
             iconRes = R.drawable.ic_checklist,
-            label = "選擇類・單選 / 多選",
+            label = "選擇類",
             bgColor = palette.accentBg,
-            fgColor = palette.accentFg
+            fgColor = palette.accentFg,
+            compact = true
         ) {
             hapticTick()
-            removeViewSafe(menuView)
-            menuView = null
+            removeViewSafe(menuView); menuView = null
             showChoiceCounterDialog()
         }.apply {
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply {
-                bottomMargin = MonochromeOverlayViews.dp(context, 10)
-            }
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
-        container.addView(choiceBtn)
+        row1.addView(inputBtn)
+        row1.addView(choiceBtn)
+        container.addView(row1)
 
+        // Row 2: Full Auto-Loop (Experimental)
         val autoLoopBtn = MonochromeOverlayViews.buildIconButton(
             context = context,
             iconRes = R.drawable.ic_autorenew,
             label = "全自動迴圈 (實驗性)",
             bgColor = palette.surface,
             fgColor = palette.fg,
-            borderColor = palette.border
+            borderColor = palette.border,
+            compact = true
         ) {
             hapticTick()
-            removeViewSafe(menuView)
-            menuView = null
+            removeViewSafe(menuView); menuView = null
             startAutoLoopWorkflow()
         }.apply {
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply {
-                bottomMargin = MonochromeOverlayViews.dp(context, 10)
-            }
+            ).apply { bottomMargin = MonochromeOverlayViews.dp(context, 8) }
         }
         container.addView(autoLoopBtn)
 
+        // Row 3: Revolutionary AI Tools (一句話指令 | 語氣回覆)
+        val row3 = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = MonochromeOverlayViews.dp(context, 8) }
+        }
+        val agentBtn = MonochromeOverlayViews.buildIconButton(
+            context = context,
+            iconRes = R.drawable.ic_bolt,
+            label = "一句話指令",
+            bgColor = palette.surface,
+            fgColor = palette.fg,
+            borderColor = palette.border,
+            compact = true
+        ) {
+            hapticTick()
+            removeViewSafe(menuView); menuView = null
+            showFreeformCommandBar()
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = MonochromeOverlayViews.dp(context, 6)
+            }
+        }
+        val replyBtn = MonochromeOverlayViews.buildIconButton(
+            context = context,
+            iconRes = R.drawable.ic_chat,
+            label = "語氣回覆",
+            bgColor = palette.surface,
+            fgColor = palette.fg,
+            borderColor = palette.border,
+            compact = true
+        ) {
+            hapticTick()
+            removeViewSafe(menuView); menuView = null
+            showSmartReplyTonePicker()
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        row3.addView(agentBtn)
+        row3.addView(replyBtn)
+        container.addView(row3)
+
+        // Row 4: Vision Tools (看圖問答 | 框選解析)
+        val row4 = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = MonochromeOverlayViews.dp(context, 8) }
+        }
         val quickAskBtn = MonochromeOverlayViews.buildIconButton(
             context = context,
             iconRes = R.drawable.ic_lightbulb,
-            label = "快速看圖問答・懸浮解答",
+            label = "看圖問答",
             bgColor = palette.surface,
             fgColor = palette.fg,
-            borderColor = palette.border
+            borderColor = palette.border,
+            compact = true
         ) {
             hapticTick()
-            removeViewSafe(menuView)
-            menuView = null
+            removeViewSafe(menuView); menuView = null
             startQuickAskWorkflow()
         }.apply {
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply {
-                bottomMargin = MonochromeOverlayViews.dp(context, 10)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = MonochromeOverlayViews.dp(context, 6)
             }
         }
-        container.addView(quickAskBtn)
-
         val regionCropBtn = MonochromeOverlayViews.buildIconButton(
             context = context,
             iconRes = R.drawable.ic_crop,
-            label = "框選區域解析・翻譯",
+            label = "框選解析",
             bgColor = palette.surface,
             fgColor = palette.fg,
-            borderColor = palette.border
+            borderColor = palette.border,
+            compact = true
         ) {
             hapticTick()
-            removeViewSafe(menuView)
-            menuView = null
+            removeViewSafe(menuView); menuView = null
             startRegionCropWorkflow()
         }.apply {
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        row4.addView(quickAskBtn)
+        row4.addView(regionCropBtn)
+        container.addView(row4)
+
+        // Row 5: Cross-Page Visual Memory Pinning
+        val pinRow = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply {
-                bottomMargin = MonochromeOverlayViews.dp(context, 10)
-            }
+            ).apply { bottomMargin = MonochromeOverlayViews.dp(context, 10) }
         }
-        container.addView(regionCropBtn)
+        val pinBtn = MonochromeOverlayViews.buildIconButton(
+            context = context,
+            iconRes = R.drawable.ic_pin,
+            label = "釘選參考頁 (${pinnedScreenshots.size}/3)",
+            bgColor = if (pinnedScreenshots.isNotEmpty()) palette.accentBg else palette.surface,
+            fgColor = if (pinnedScreenshots.isNotEmpty()) palette.accentFg else palette.fg,
+            borderColor = palette.border,
+            compact = true
+        ) {
+            hapticTick()
+            removeViewSafe(menuView); menuView = null
+            pinCurrentScreen()
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        pinRow.addView(pinBtn)
+        if (pinnedScreenshots.isNotEmpty()) {
+            val clearPinBtn = MonochromeOverlayViews.buildIconButton(
+                context = context,
+                iconRes = R.drawable.ic_close,
+                label = "清除",
+                bgColor = palette.surface,
+                fgColor = palette.fgMuted,
+                borderColor = palette.border,
+                compact = true
+            ) {
+                hapticTick()
+                pinnedScreenshots.clear()
+                removeViewSafe(menuView); menuView = null
+                showStatusHud("已清除所有釘選參考頁", autoDismissMs = 1800L)
+            }.apply {
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { marginStart = MonochromeOverlayViews.dp(context, 6) }
+            }
+            pinRow.addView(clearPinBtn)
+        }
+        container.addView(pinRow)
 
-        // Utility row: Settings, Hide, Stop
+                // Utility row: Settings, Hide, Stop
         val utilRow = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
@@ -535,7 +629,7 @@ class FloatingOverlayController(
 
                 showStatusHud("DeepSeek 分析輸入內容中…", showCancel = true)
                 val t0 = System.currentTimeMillis()
-                when (val result = DeepSeekClient.solveInput(cfg, base64)) {
+                when (val result = DeepSeekClient.solveInput(cfg, base64, pinnedScreenshots.toList())) {
                     is ApiResult.Success -> {
                         val solved = result.data
                         val finalAnswer = solved.finalText
@@ -789,7 +883,7 @@ class FloatingOverlayController(
 
             // 2. Fire DeepSeek Vision request immediately in parallel while user taps option positions!
             val aiDeferred: Deferred<ApiResult<List<Int>>> = async {
-                DeepSeekClient.solveChoice(cfg, base64, optionCount)
+                DeepSeekClient.solveChoice(cfg, base64, optionCount, pinnedScreenshots.toList())
             }
 
             val palette = MonochromeOverlayViews.paletteFor(context, cfg.overlayTheme)
@@ -1087,7 +1181,8 @@ class FloatingOverlayController(
                 base64Jpeg = screen.base64Jpeg,
                 elements = elements,
                 completedInRound = completedInRound,
-                roundNumber = round
+                roundNumber = round,
+                pinnedImages = pinnedScreenshots.toList()
             )
         ) {
             is ApiResult.Success -> Triple(screen, elements, res.data)
@@ -1108,6 +1203,8 @@ class FloatingOverlayController(
         choiceCounterView?.visibility = View.INVISIBLE
         hudView?.visibility = View.INVISIBLE
         answerCardView?.visibility = View.INVISIBLE
+        commandBarView?.visibility = View.INVISIBLE
+        smartReplyView?.visibility = View.INVISIBLE
         captureCanvasView?.visibility = View.INVISIBLE
 
         delay(cfg.screenshotHideDelayMs.toLong())
@@ -1133,6 +1230,8 @@ class FloatingOverlayController(
         choiceCounterView?.visibility = View.INVISIBLE
         hudView?.visibility = View.INVISIBLE
         answerCardView?.visibility = View.INVISIBLE
+        commandBarView?.visibility = View.INVISIBLE
+        smartReplyView?.visibility = View.INVISIBLE
         captureCanvasView?.visibility = View.INVISIBLE
 
         delay(cfg.screenshotHideDelayMs.toLong())
@@ -1308,6 +1407,460 @@ class FloatingOverlayController(
         }
     }
 
+    // =========================================================================
+    // CREATIVE 1: Cross-Page Pinned Visual Memory (釘選參考頁)
+    // =========================================================================
+    private fun pinCurrentScreen() {
+        val cfg = configStore.current
+        if (DaFeiYuAccessibilityService.instance == null) {
+            showStatusHud("請先開啟「大肥魚」無障礙服務", autoDismissMs = 3000L)
+            return
+        }
+        activeWorkflowJob?.cancel()
+        activeWorkflowJob = scope.launch {
+            val base64 = captureCleanScreenshot(cfg)
+            if (base64 == null) {
+                showStatusHud("截圖失敗：請確認無障礙服務已啟用", autoDismissMs = 3000L)
+                return@launch
+            }
+            if (pinnedScreenshots.size >= 3) {
+                pinnedScreenshots.removeAt(0)
+            }
+            pinnedScreenshots.add(base64)
+            showStatusHud("已釘選參考頁 (${pinnedScreenshots.size}/3)，切到題目頁即可跨頁作答", autoDismissMs = 3200L)
+        }
+    }
+
+    // =========================================================================
+    // CREATIVE 2: Natural Language Screen Agent (一句話指令操作)
+    // =========================================================================
+    private fun showFreeformCommandBar() {
+        val cfg = configStore.current
+        if (!validateReadyForWorkflow(cfg)) return
+        removeAllTransientViews()
+
+        val palette = MonochromeOverlayViews.paletteFor(context, cfg.overlayTheme)
+        val container = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            background = MonochromeOverlayViews.roundedBg(context, palette.bg, palette.border, 1, 24)
+            elevation = MonochromeOverlayViews.dp(context, 12).toFloat()
+            val pad = MonochromeOverlayViews.dp(context, 14)
+            setPadding(pad, pad, pad, pad)
+        }
+
+        val header = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 0, 0, MonochromeOverlayViews.dp(context, 8))
+        }
+        val hIcon = ImageView(context).apply {
+            setImageDrawable(ContextCompat.getDrawable(context, R.drawable.ic_bolt)?.mutate())
+            setColorFilter(palette.fg)
+            val s = MonochromeOverlayViews.dp(context, 18)
+            layoutParams = LinearLayout.LayoutParams(s, s).apply { marginEnd = MonochromeOverlayViews.dp(context, 8) }
+        }
+        val hTitle = TextView(context).apply {
+            text = "一句話指令 AI 代理人"
+            setTextColor(palette.fg)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        val closeBtn = MonochromeOverlayViews.buildIconButton(
+            context = context,
+            iconRes = R.drawable.ic_close,
+            label = "",
+            bgColor = palette.surface,
+            fgColor = palette.fg,
+            compact = true
+        ) {
+            removeViewSafe(commandBarView); commandBarView = null
+        }
+        header.addView(hIcon)
+        header.addView(hTitle)
+        header.addView(closeBtn)
+        container.addView(header)
+
+        val inputBox = EditText(context).apply {
+            hint = "例如：填完這張表單、總結重點、勾選同意並繼續…"
+            setHintTextColor(palette.fgMuted)
+            setTextColor(palette.fg)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            background = MonochromeOverlayViews.roundedBg(context, palette.surface, palette.border, 1, 16)
+            val pH = MonochromeOverlayViews.dp(context, 12)
+            val pV = MonochromeOverlayViews.dp(context, 10)
+            setPadding(pH, pV, pH, pV)
+            maxLines = 3
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = MonochromeOverlayViews.dp(context, 10) }
+        }
+        container.addView(inputBox)
+
+        // Quick 1-tap creative presets
+        val presets = listOf("總結重點", "填完表單", "勾選同意並繼續")
+        val presetRow = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = MonochromeOverlayViews.dp(context, 10) }
+        }
+        presets.forEachIndexed { idx, preset ->
+            val chip = MonochromeOverlayViews.buildPillTextButton(
+                context = context,
+                label = preset,
+                bgColor = palette.surface,
+                fgColor = palette.fg,
+                borderColor = palette.border
+            ) {
+                hapticTick()
+                removeViewSafe(commandBarView); commandBarView = null
+                runFreeformAgent(preset)
+            }.apply {
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    if (idx < presets.lastIndex) marginEnd = MonochromeOverlayViews.dp(context, 6)
+                }
+            }
+            presetRow.addView(chip)
+        }
+        container.addView(presetRow)
+
+        val runBtn = MonochromeOverlayViews.buildIconButton(
+            context = context,
+            iconRes = R.drawable.ic_bolt,
+            label = "立即執行指令",
+            bgColor = palette.accentBg,
+            fgColor = palette.accentFg
+        ) {
+            val cmd = inputBox.text?.toString()?.trim().orEmpty()
+            if (cmd.isEmpty()) return@buildIconButton
+            hapticTick()
+            removeViewSafe(commandBarView); commandBarView = null
+            runFreeformAgent(cmd)
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
+        container.addView(runBtn)
+
+        val widthPx = (context.resources.displayMetrics.widthPixels - MonochromeOverlayViews.dp(context, 40))
+            .coerceIn(MonochromeOverlayViews.dp(context, 270), MonochromeOverlayViews.dp(context, 360))
+        val params = WindowManager.LayoutParams(
+            widthPx,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            overlayWindowType(),
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.CENTER
+            softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+        }
+        container.setOnTouchListener { _, ev ->
+            if (ev.action == MotionEvent.ACTION_OUTSIDE) {
+                removeViewSafe(commandBarView); commandBarView = null
+                true
+            } else false
+        }
+        commandBarView = container
+        addViewSafe(container, params)
+    }
+
+    private fun runFreeformAgent(instruction: String) {
+        val cfg = configStore.current
+        activeWorkflowJob?.cancel()
+        activeWorkflowJob = scope.launch {
+            val a11y = DaFeiYuAccessibilityService.instance
+            if (a11y == null) {
+                showStatusHud("無障礙服務未連線", autoDismissMs = 3000L)
+                return@launch
+            }
+            // Dismiss command bar keyboard before taking clean screenshot
+            if (a11y.dismissSoftKeyboardIfVisible()) delay(220)
+
+            val screen = captureCleanScreenWithMetrics(cfg)
+            if (screen == null) {
+                showStatusHud("截圖失敗：請確認無障礙服務已啟用", autoDismissMs = 3500L)
+                return@launch
+            }
+            val elements = a11y.extractInteractiveElements(screen.physicalWidth, screen.physicalHeight)
+            showStatusHud("AI 代理人規劃中：「${instruction.take(14)}」", showCancel = true, cancelLabel = "停止")
+
+            val t0 = System.currentTimeMillis()
+            when (
+                val res = DeepSeekClient.executeFreeformCommand(
+                    config = cfg,
+                    base64Jpeg = screen.base64Jpeg,
+                    elements = elements,
+                    instruction = instruction,
+                    pinnedImages = pinnedScreenshots.toList()
+                )
+            ) {
+                is ApiResult.Success -> {
+                    val latency = System.currentTimeMillis() - t0
+                    val plan = res.data
+                    val validCards = cfg.envCards.filter { it.name.isNotBlank() }
+
+                    plan.actions.forEachIndexed { idx, act ->
+                        showStatusHud("執行步驟 ${idx + 1}/${plan.actions.size}：${act.description.take(18)}", showCancel = true, cancelLabel = "停止")
+                        when (act.type) {
+                            "tap" -> {
+                                val pt = a11y.resolvePreciseTapPoint(
+                                    act.elementId, act.x, act.y,
+                                    screen.physicalWidth, screen.physicalHeight,
+                                    elements, cfg.autoLoopSnapToNode
+                                )
+                                showTapPulse(pt.x, pt.y)
+                                a11y.performTap(pt.x, pt.y)
+                            }
+                            "input" -> {
+                                val pt = a11y.resolvePreciseTapPoint(
+                                    act.elementId, act.x, act.y,
+                                    screen.physicalWidth, screen.physicalHeight,
+                                    elements, cfg.autoLoopSnapToNode
+                                )
+                                val solved = DeepSeekClient.resolveEnvCards(act.text, validCards)
+                                showTapPulse(pt.x, pt.y)
+                                a11y.tapAndInputText(pt.x, pt.y, solved.finalText, cfg.inputMethod)
+                                delay(180)
+                                a11y.dismissSoftKeyboardIfVisible()
+                            }
+                            "scroll_down" -> a11y.performScrollDown(screen.physicalWidth, screen.physicalHeight)
+                            "scroll_up" -> a11y.performScrollUp(screen.physicalWidth, screen.physicalHeight)
+                        }
+                        if (idx < plan.actions.lastIndex) delay(450L)
+                    }
+
+                    val logSummary = plan.replyText.ifBlank { "已完成 ${plan.actions.size} 個操作步驟（$instruction）" }
+                    historyStore.record("一句話指令", cfg.modelId, latency, logSummary, true)
+
+                    if (plan.replyText.isNotBlank()) {
+                        removeViewSafe(hudView); hudView = null
+                        showAnswerCard(plan.replyText, latency, screen.base64Jpeg)
+                    } else {
+                        showStatusHud("指令執行完成（${plan.actions.size} 步 · ${latency}ms）", autoDismissMs = 3500L)
+                    }
+                }
+                is ApiResult.Error -> {
+                    historyStore.record("一句話指令", cfg.modelId, System.currentTimeMillis() - t0, res.message, false)
+                    showStatusHud(res.message, autoDismissMs = 4500L)
+                }
+            }
+        }
+    }
+
+    // =========================================================================
+    // CREATIVE 3: Smart Contextual Reply (語氣智能回覆)
+    // =========================================================================
+    private fun showSmartReplyTonePicker() {
+        val cfg = configStore.current
+        if (!validateReadyForWorkflow(cfg)) return
+        removeAllTransientViews()
+
+        val palette = MonochromeOverlayViews.paletteFor(context, cfg.overlayTheme)
+        val container = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            background = MonochromeOverlayViews.roundedBg(context, palette.bg, palette.border, 1, 24)
+            elevation = MonochromeOverlayViews.dp(context, 10).toFloat()
+            val pad = MonochromeOverlayViews.dp(context, 16)
+            setPadding(pad, pad, pad, pad)
+        }
+
+        val header = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 0, 0, MonochromeOverlayViews.dp(context, 12))
+        }
+        val icon = ImageView(context).apply {
+            setImageDrawable(ContextCompat.getDrawable(context, R.drawable.ic_chat)?.mutate())
+            setColorFilter(palette.fg)
+            val s = MonochromeOverlayViews.dp(context, 18)
+            layoutParams = LinearLayout.LayoutParams(s, s).apply { marginEnd = MonochromeOverlayViews.dp(context, 8) }
+        }
+        val title = TextView(context).apply {
+            text = "語氣智能回覆・選擇風格"
+            setTextColor(palette.fg)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        val closeBtn = MonochromeOverlayViews.buildIconButton(
+            context = context,
+            iconRes = R.drawable.ic_close,
+            label = "",
+            bgColor = palette.surface,
+            fgColor = palette.fg,
+            compact = true
+        ) {
+            removeViewSafe(smartReplyView); smartReplyView = null
+        }
+        header.addView(icon)
+        header.addView(title)
+        header.addView(closeBtn)
+        container.addView(header)
+
+        val tones = listOf("專業禮貌", "幽默風趣", "簡短高冷", "溫柔體貼", "婉拒拒絕")
+        tones.forEach { tone ->
+            val btn = MonochromeOverlayViews.buildIconButton(
+                context = context,
+                iconRes = R.drawable.ic_chat,
+                label = tone,
+                bgColor = palette.surface,
+                fgColor = palette.fg,
+                borderColor = palette.border,
+                compact = true
+            ) {
+                hapticTick()
+                removeViewSafe(smartReplyView); smartReplyView = null
+                runSmartReply(tone)
+            }.apply {
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { bottomMargin = MonochromeOverlayViews.dp(context, 8) }
+            }
+            container.addView(btn)
+        }
+
+        val params = WindowManager.LayoutParams(
+            MonochromeOverlayViews.dp(context, 260),
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            overlayWindowType(),
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
+            PixelFormat.TRANSLUCENT
+        ).apply { gravity = Gravity.CENTER }
+
+        container.setOnTouchListener { _, ev ->
+            if (ev.action == MotionEvent.ACTION_OUTSIDE) {
+                removeViewSafe(smartReplyView); smartReplyView = null
+                true
+            } else false
+        }
+        smartReplyView = container
+        addViewSafe(container, params)
+    }
+
+    private fun runSmartReply(tone: String) {
+        val cfg = configStore.current
+        activeWorkflowJob?.cancel()
+        activeWorkflowJob = scope.launch {
+            val base64 = captureCleanScreenshot(cfg)
+            if (base64 == null) {
+                showStatusHud("截圖失敗：請確認無障礙服務已啟用", autoDismissMs = 3500L)
+                return@launch
+            }
+            showStatusHud("生成「$tone」回覆選項中…", showCancel = true, cancelLabel = "取消")
+            val t0 = System.currentTimeMillis()
+            when (val res = DeepSeekClient.solveSmartReply(cfg, base64, tone, pinnedScreenshots.toList())) {
+                is ApiResult.Success -> {
+                    val latency = System.currentTimeMillis() - t0
+                    historyStore.record("語氣回覆 ($tone)", cfg.modelId, latency, res.data.firstOrNull().orEmpty(), true)
+                    removeViewSafe(hudView); hudView = null
+                    showSmartReplyOptionsCard(tone, res.data, latency)
+                }
+                is ApiResult.Error -> {
+                    historyStore.record("語氣回覆 ($tone)", cfg.modelId, System.currentTimeMillis() - t0, res.message, false)
+                    showStatusHud(res.message, autoDismissMs = 4500L)
+                }
+            }
+        }
+    }
+
+    private fun showSmartReplyOptionsCard(tone: String, options: List<String>, latencyMs: Long) {
+        removeViewSafe(smartReplyView)
+        val cfg = configStore.current
+        val palette = MonochromeOverlayViews.paletteFor(context, cfg.overlayTheme)
+
+        val card = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            background = MonochromeOverlayViews.roundedBg(context, palette.bg, palette.border, 1, 24)
+            elevation = MonochromeOverlayViews.dp(context, 12).toFloat()
+            val pad = MonochromeOverlayViews.dp(context, 16)
+            setPadding(pad, pad, pad, pad)
+        }
+
+        val header = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 0, 0, MonochromeOverlayViews.dp(context, 10))
+        }
+        val title = TextView(context).apply {
+            text = "$tone · 點擊自動填入輸入框 (${latencyMs}ms)"
+            setTextColor(palette.fg)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        val closeBtn = MonochromeOverlayViews.buildIconButton(
+            context = context,
+            iconRes = R.drawable.ic_close,
+            label = "",
+            bgColor = palette.surface,
+            fgColor = palette.fg,
+            compact = true
+        ) {
+            removeViewSafe(smartReplyView); smartReplyView = null
+        }
+        header.addView(title)
+        header.addView(closeBtn)
+        card.addView(header)
+
+        options.forEach { replyText ->
+            val optView = TextView(context).apply {
+                text = replyText
+                setTextColor(palette.fg)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+                background = MonochromeOverlayViews.roundedBg(context, palette.surface, palette.border, 1, 16)
+                val pH = MonochromeOverlayViews.dp(context, 12)
+                val pV = MonochromeOverlayViews.dp(context, 10)
+                setPadding(pH, pV, pH, pV)
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { bottomMargin = MonochromeOverlayViews.dp(context, 8) }
+                setOnClickListener {
+                    hapticTick()
+                    removeViewSafe(smartReplyView); smartReplyView = null
+                    scope.launch {
+                        val a11y = DaFeiYuAccessibilityService.instance
+                        val injected = a11y?.injectIntoBottomInputBox(replyText, cfg.inputMethod) == true
+                        showStatusHud(
+                            message = if (injected) "已自動填入回覆" else "已複製回覆至剪貼簿",
+                            copyText = replyText,
+                            autoDismissMs = 3000L
+                        )
+                    }
+                }
+            }
+            card.addView(optView)
+        }
+
+        val widthPx = (context.resources.displayMetrics.widthPixels - MonochromeOverlayViews.dp(context, 44))
+            .coerceIn(MonochromeOverlayViews.dp(context, 260), MonochromeOverlayViews.dp(context, 360))
+        val params = WindowManager.LayoutParams(
+            widthPx,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            overlayWindowType(),
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
+            PixelFormat.TRANSLUCENT
+        ).apply { gravity = Gravity.CENTER }
+
+        card.setOnTouchListener { _, ev ->
+            if (ev.action == MotionEvent.ACTION_OUTSIDE) {
+                removeViewSafe(smartReplyView); smartReplyView = null
+                true
+            } else false
+        }
+        smartReplyView = card
+        addViewSafe(card, params)
+    }
+
     private fun triggerLongPressShortcut() {
         when (configStore.current.orbLongPressAction) {
             LongPressAction.QUICK_ASK -> startQuickAskWorkflow()
@@ -1315,6 +1868,8 @@ class FloatingOverlayController(
             LongPressAction.INPUT -> startInputWorkflow()
             LongPressAction.CHOICE -> showChoiceCounterDialog()
             LongPressAction.AUTO_LOOP -> startAutoLoopWorkflow()
+            LongPressAction.FREEFORM_AGENT -> showFreeformCommandBar()
+            LongPressAction.SMART_REPLY -> showSmartReplyTonePicker()
             LongPressAction.HIDE -> toggleOrbVisibility()
         }
     }
@@ -1334,7 +1889,7 @@ class FloatingOverlayController(
             }
             showStatusHud("快速看圖問答：DeepSeek 解析中…", showCancel = true, cancelLabel = "取消")
             val t0 = System.currentTimeMillis()
-            when (val res = DeepSeekClient.solveQuickAsk(cfg, base64)) {
+            when (val res = DeepSeekClient.solveQuickAsk(cfg, base64, pinnedScreenshots.toList())) {
                 is ApiResult.Success -> {
                     val latency = System.currentTimeMillis() - t0
                     historyStore.record("看圖問答", cfg.modelId, latency, res.data, true)
@@ -1386,7 +1941,7 @@ class FloatingOverlayController(
                 }
                 showStatusHud("框選區域解析中…", showCancel = true, cancelLabel = "取消")
                 val t0 = System.currentTimeMillis()
-                when (val res = DeepSeekClient.solveQuickAsk(cfg, croppedB64)) {
+                when (val res = DeepSeekClient.solveQuickAsk(cfg, croppedB64, pinnedScreenshots.toList())) {
                     is ApiResult.Success -> {
                         val latency = System.currentTimeMillis() - t0
                         historyStore.record("框選解析", cfg.modelId, latency, res.data, true)
@@ -1596,6 +2151,8 @@ class FloatingOverlayController(
         removeViewSafe(choiceCounterView); choiceCounterView = null
         removeViewSafe(captureCanvasView); captureCanvasView = null
         removeViewSafe(regionSelectView); regionSelectView = null
+        removeViewSafe(commandBarView); commandBarView = null
+        removeViewSafe(smartReplyView); smartReplyView = null
         removeViewSafe(hudView); hudView = null
         removeViewSafe(answerCardView); answerCardView = null
     }

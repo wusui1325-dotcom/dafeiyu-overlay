@@ -349,6 +349,70 @@ class DaFeiYuAccessibilityService : AccessibilityService() {
         return PointF(rawX, rawY)
     }
 
+    suspend fun performScrollUp(physicalWidth: Int, physicalHeight: Int): Boolean {
+        val cx = physicalWidth * 0.5f
+        val startY = physicalHeight * 0.30f
+        val endY = physicalHeight * 0.74f
+        val path = Path().apply {
+            moveTo(cx, startY)
+            lineTo(cx, endY)
+        }
+        val stroke = GestureDescription.StrokeDescription(path, 0L, 320L)
+        val gesture = GestureDescription.Builder().addStroke(stroke).build()
+        return suspendCancellableCoroutine { cont ->
+            val dispatched = dispatchGesture(
+                gesture,
+                object : GestureResultCallback() {
+                    override fun onCompleted(gestureDescription: GestureDescription?) {
+                        if (cont.isActive) cont.resume(true)
+                    }
+                    override fun onCancelled(gestureDescription: GestureDescription?) {
+                        if (cont.isActive) cont.resume(false)
+                    }
+                },
+                null
+            )
+            if (!dispatched && cont.isActive) cont.resume(false)
+        }
+    }
+
+    /**
+     * Finds the active focused input box or the lowest visible editable box on screen
+     * (standard chat/comment reply bar) and injects text directly.
+     */
+    suspend fun injectIntoBottomInputBox(text: String, method: InputInjectionMethod): Boolean {
+        val focused = findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+        if (focused != null && focused.isEditable) {
+            val rect = Rect()
+            focused.getBoundsInScreen(rect)
+            return tapAndInputText(rect.exactCenterX(), rect.exactCenterY(), text, method)
+        }
+        val root = rootInActiveWindow
+        if (root != null) {
+            val editables = mutableListOf<Rect>()
+            fun findAll(node: AccessibilityNodeInfo, depth: Int) {
+                if (depth > 20) return
+                if (!node.isVisibleToUser) return
+                if (node.isEditable) {
+                    val r = Rect()
+                    node.getBoundsInScreen(r)
+                    if (r.width() > 40 && r.height() > 20) editables.add(r)
+                }
+                for (i in 0 until node.childCount) {
+                    val c = node.getChild(i) ?: continue
+                    findAll(c, depth + 1)
+                }
+            }
+            findAll(root, 0)
+            val bottomBox = editables.maxByOrNull { it.bottom }
+            if (bottomBox != null) {
+                return tapAndInputText(bottomBox.exactCenterX(), bottomBox.exactCenterY(), text, method)
+            }
+        }
+        copyToClipboard(text)
+        return false
+    }
+
     suspend fun performScrollDown(physicalWidth: Int, physicalHeight: Int): Boolean {
         val cx = physicalWidth * 0.5f
         val startY = physicalHeight * 0.74f
