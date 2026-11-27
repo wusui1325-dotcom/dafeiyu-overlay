@@ -7,6 +7,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Path
+import android.graphics.PointF
 import android.graphics.Rect
 import android.os.Build
 import android.os.Bundle
@@ -21,6 +22,27 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import kotlin.coroutines.resume
+import kotlin.math.hypot
+
+data class CapturedScreen(
+    val base64Jpeg: String,
+    val physicalWidth: Int,
+    val physicalHeight: Int
+)
+
+data class UiElementSnapshot(
+    val id: Int,
+    val kind: String,
+    val label: String,
+    val bounds: Rect,
+    val normX: Int,
+    val normY: Int,
+    val normLeft: Int,
+    val normTop: Int,
+    val normRight: Int,
+    val normBottom: Int,
+    val isChecked: Boolean
+)
 
 class DaFeiYuAccessibilityService : AccessibilityService() {
 
@@ -45,12 +67,22 @@ class DaFeiYuAccessibilityService : AccessibilityService() {
     }
 
     suspend fun captureScreenshotBase64(maxWidth: Int, jpegQuality: Int): String? {
+        return captureScreenWithMetrics(maxWidth, jpegQuality)?.base64Jpeg
+    }
+
+    /**
+     * Captures the full physical display (matching dispatchGesture coordinate space 1:1)
+     * and returns both the compressed Base64 JPEG and exact original physical dimensions.
+     */
+    suspend fun captureScreenWithMetrics(maxWidth: Int, jpegQuality: Int): CapturedScreen? {
         val bitmap = captureScreenBitmap() ?: return null
+        val physW = bitmap.width
+        val physH = bitmap.height
         return withContext(Dispatchers.Default) {
             try {
-                val scaled = if (bitmap.width > maxWidth && maxWidth > 0) {
-                    val ratio = maxWidth.toFloat() / bitmap.width.toFloat()
-                    val targetHeight = (bitmap.height * ratio).toInt().coerceAtLeast(1)
+                val scaled = if (physW > maxWidth && maxWidth > 0) {
+                    val ratio = maxWidth.toFloat() / physW.toFloat()
+                    val targetHeight = (physH * ratio).toInt().coerceAtLeast(1)
                     Bitmap.createScaledBitmap(bitmap, maxWidth, targetHeight, true)
                 } else {
                     bitmap
@@ -59,7 +91,11 @@ class DaFeiYuAccessibilityService : AccessibilityService() {
                 scaled.compress(Bitmap.CompressFormat.JPEG, jpegQuality.coerceIn(45, 95), stream)
                 if (scaled !== bitmap) scaled.recycle()
                 bitmap.recycle()
-                Base64.encodeToString(stream.toByteArray(), Base64.NO_WRAP)
+                CapturedScreen(
+                    base64Jpeg = Base64.encodeToString(stream.toByteArray(), Base64.NO_WRAP),
+                    physicalWidth = physW,
+                    physicalHeight = physH
+                )
             } catch (_: Throwable) {
                 runCatching { bitmap.recycle() }
                 null
@@ -104,6 +140,176 @@ class DaFeiYuAccessibilityService : AccessibilityService() {
         }
     }
 
+    /**
+     * Extracts visible interactive Accessibility nodes from the active foreground app,
+     * normalized to a 0..1000 grid against the exact physical screen bounds, sorted
+     * top-to-bottom, left-to-right for cross-device pixel-accurate tapping.
+     */
+    fun extractInteractiveElements(
+        physicalWidth: Int,
+        physicalHeight: Int,
+        maxElements: Int = 45
+    ): List<UiElementSnapshot> {
+        if (physicalWidth <= 0 || physicalHeight <= 0) return emptyList()
+        val root = rootInActiveWindow ?: return emptyList()
+        if (root.packageName?.toString() == packageName) return emptyList()
+
+        data class RawCandidate(
+            val kind: String,
+            val label: String,
+            val bounds: Rect,
+            val isChecked: Boolean
+        )
+
+        val candidates = mutableListOf<RawCandidate>()
+        val seenRects = HashSet<String>()
+
+        fun traverse(node: AccessibilityNodeInfo, depth: Int) {
+            if (depth > 22 || candidates.size >= 120) return
+            if (!node.isVisibleToUser) return
+
+            val rect = Rect()
+            node.getBoundsInScreen(rect)
+            val clipped = Rect(rect)
+            if (!clipped.intersect(0, 0, physicalWidth, physicalHeight)) return
+            val w = clipped.width()
+            val h = clipped.height()
+            if (w < 16 || h < 16) return
+            // Skip full-screen container wrappers
+            val isFullScreenWrapper = w > (physicalWidth * 0.96f) && h > (physicalHeight * 0.85f)
+
+            val isInteractive = node.isEditable || node.isCheckable || node.isClickable
+            if (isInteractive && !isFullScreenWrapper) {
+                val text = collectNodeLabel(node)
+                val kind = when {
+                    node.isEditable -> "input"
+                    node.isCheckable -> "option"
+                    else -> "button"
+                }
+                val key = "${clipped.left / 8}_${clipped.top / 8}_${clipped.right / 8}_${clipped.bottom / 8}"
+                if (seenRects.add(key)) {
+                    candidates.add(
+                        RawCandidate(
+                            kind = kind,
+                            label = text.take(48),
+                            bounds = clipped,
+                            isChecked = node.isChecked || node.isSelected
+                        )
+                    )
+                }
+            }
+
+            for (i in 0 until node.childCount) {
+                val child = node.getChild(i) ?: continue
+                traverse(child, depth + 1)
+            }
+        }
+
+        traverse(root, 0)
+
+        // Sort strictly top-to-bottom (row bucket = 3% of screen height), left-to-right
+        val rowBucketPx = (physicalHeight * 0.03f).toInt().coerceAtLeast(24)
+        val sorted = candidates.sortedWith(
+            compareBy<RawCandidate> { it.bounds.centerY() / rowBucketPx }
+                .thenBy { it.bounds.centerX() }
+        ).take(maxElements)
+
+        return sorted.mapIndexed { idx, c ->
+            UiElementSnapshot(
+                id = idx + 1,
+                kind = c.kind,
+                label = c.label,
+                bounds = c.bounds,
+                normX = ((c.bounds.exactCenterX() / physicalWidth) * 1000f).toInt().coerceIn(0, 1000),
+                normY = ((c.bounds.exactCenterY() / physicalHeight) * 1000f).toInt().coerceIn(0, 1000),
+                normLeft = ((c.bounds.left.toFloat() / physicalWidth) * 1000f).toInt().coerceIn(0, 1000),
+                normTop = ((c.bounds.top.toFloat() / physicalHeight) * 1000f).toInt().coerceIn(0, 1000),
+                normRight = ((c.bounds.right.toFloat() / physicalWidth) * 1000f).toInt().coerceIn(0, 1000),
+                normBottom = ((c.bounds.bottom.toFloat() / physicalHeight) * 1000f).toInt().coerceIn(0, 1000),
+                isChecked = c.isChecked
+            )
+        }
+    }
+
+    private fun collectNodeLabel(node: AccessibilityNodeInfo): String {
+        val own = listOfNotNull(
+            node.text?.toString()?.trim()?.takeIf { it.isNotEmpty() },
+            node.contentDescription?.toString()?.trim()?.takeIf { it.isNotEmpty() },
+            node.hintText?.toString()?.trim()?.takeIf { it.isNotEmpty() }
+        ).firstOrNull()
+        if (!own.isNullOrBlank()) return own
+
+        // Pull label from direct child text nodes (common in custom option cards/buttons)
+        val parts = mutableListOf<String>()
+        for (i in 0 until node.childCount.coerceAtMost(6)) {
+            val child = node.getChild(i) ?: continue
+            val t = child.text?.toString()?.trim()
+            if (!t.isNullOrEmpty()) parts.add(t)
+        }
+        return parts.joinToString(" ").trim()
+    }
+
+    /**
+     * Resolves a target from DeepSeek (optional Accessibility elementId + 0..1000 normalized
+     * coordinates) into exact physical screen tap coordinates adapted to any device/aspect ratio.
+     */
+    fun resolvePreciseTapPoint(
+        elementId: Int?,
+        normX: Int,
+        normY: Int,
+        physicalWidth: Int,
+        physicalHeight: Int,
+        elements: List<UiElementSnapshot>,
+        snapToNode: Boolean
+    ): PointF {
+        // 1. Exact Accessibility node match by elementId -> guaranteed pixel-perfect center
+        if (elementId != null && snapToNode) {
+            val matched = elements.firstOrNull { it.id == elementId }
+            if (matched != null) {
+                return PointF(
+                    matched.bounds.exactCenterX().coerceIn(2f, (physicalWidth - 2).toFloat()),
+                    matched.bounds.exactCenterY().coerceIn(2f, (physicalHeight - 2).toFloat())
+                )
+            }
+        }
+
+        // 2. Map 0..1000 normalized coordinates to physical display pixels
+        val rawX = (normX.coerceIn(1, 999) / 1000f) * physicalWidth
+        val rawY = (normY.coerceIn(1, 999) / 1000f) * physicalHeight
+
+        if (!snapToNode || elements.isEmpty()) {
+            return PointF(rawX, rawY)
+        }
+
+        // 3. Snap to smallest interactive Accessibility node containing (rawX, rawY)
+        val containing = elements
+            .filter { it.bounds.contains(rawX.toInt(), rawY.toInt()) }
+            .minByOrNull { it.bounds.width().toLong() * it.bounds.height().toLong() }
+        if (containing != null) {
+            return PointF(containing.bounds.exactCenterX(), containing.bounds.exactCenterY())
+        }
+
+        // 4. Gentle proximity snap (within 3% of screen width) if visual point slightly missed edge
+        val maxSnapDist = (physicalWidth * 0.03f).coerceAtLeast(24f)
+        val nearest = elements.minByOrNull {
+            hypot(
+                (it.bounds.exactCenterX() - rawX).toDouble(),
+                (it.bounds.exactCenterY() - rawY).toDouble()
+            )
+        }
+        if (nearest != null) {
+            val dist = hypot(
+                (nearest.bounds.exactCenterX() - rawX).toDouble(),
+                (nearest.bounds.exactCenterY() - rawY).toDouble()
+            )
+            if (dist <= maxSnapDist) {
+                return PointF(nearest.bounds.exactCenterX(), nearest.bounds.exactCenterY())
+            }
+        }
+
+        return PointF(rawX, rawY)
+    }
+
     suspend fun performTap(x: Float, y: Float, durationMs: Long = 55L): Boolean {
         val path = Path().apply { moveTo(x, y) }
         val stroke = GestureDescription.StrokeDescription(path, 0L, durationMs)
@@ -135,7 +341,6 @@ class DaFeiYuAccessibilityService : AccessibilityService() {
         text: String,
         method: InputInjectionMethod
     ): Boolean {
-        // 1. Tap target input box to ensure focus
         performTap(x, y)
         delay(240)
 

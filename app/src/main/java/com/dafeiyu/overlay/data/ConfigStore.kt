@@ -120,6 +120,11 @@ class ConfigStore(context: Context) {
             inputMethod = inputMethod,
             showResultToast = prefs.getBoolean(KEY_SHOW_RESULT_TOAST, true),
             defaultChoiceCount = prefs.getInt(KEY_DEFAULT_CHOICE_COUNT, 4).coerceIn(2, 10),
+            autoLoopMaxRounds = prefs.getInt(KEY_AUTOLOOP_MAX_ROUNDS, 20).coerceIn(1, 50),
+            autoLoopMaxItemsPerPage = prefs.getInt(KEY_AUTOLOOP_MAX_ITEMS, 8).coerceIn(1, 20),
+            autoLoopStepDelayMs = prefs.getInt(KEY_AUTOLOOP_STEP_DELAY, 700).coerceIn(250, 3000),
+            autoLoopPageDelayMs = prefs.getInt(KEY_AUTOLOOP_PAGE_DELAY, 1300).coerceIn(400, 5000),
+            autoLoopSnapToNode = prefs.getBoolean(KEY_AUTOLOOP_SNAP_NODE, true),
             inputSystemPrompt = prefs.getString(KEY_INPUT_PROMPT, AppConfig.DEFAULT_INPUT_SYSTEM_PROMPT)
                 ?.ifBlank { AppConfig.DEFAULT_INPUT_SYSTEM_PROMPT } ?: AppConfig.DEFAULT_INPUT_SYSTEM_PROMPT,
             choiceSystemPrompt = prefs.getString(KEY_CHOICE_PROMPT, AppConfig.DEFAULT_CHOICE_SYSTEM_PROMPT)
@@ -174,6 +179,11 @@ class ConfigStore(context: Context) {
             .putString(KEY_INPUT_METHOD, cfg.inputMethod.name)
             .putBoolean(KEY_SHOW_RESULT_TOAST, cfg.showResultToast)
             .putInt(KEY_DEFAULT_CHOICE_COUNT, cfg.defaultChoiceCount)
+            .putInt(KEY_AUTOLOOP_MAX_ROUNDS, cfg.autoLoopMaxRounds)
+            .putInt(KEY_AUTOLOOP_MAX_ITEMS, cfg.autoLoopMaxItemsPerPage)
+            .putInt(KEY_AUTOLOOP_STEP_DELAY, cfg.autoLoopStepDelayMs)
+            .putInt(KEY_AUTOLOOP_PAGE_DELAY, cfg.autoLoopPageDelayMs)
+            .putBoolean(KEY_AUTOLOOP_SNAP_NODE, cfg.autoLoopSnapToNode)
             .putString(KEY_INPUT_PROMPT, cfg.inputSystemPrompt)
             .putString(KEY_CHOICE_PROMPT, cfg.choiceSystemPrompt)
             .apply()
@@ -208,6 +218,11 @@ class ConfigStore(context: Context) {
         private const val KEY_INPUT_METHOD = "input_method"
         private const val KEY_SHOW_RESULT_TOAST = "show_result_toast"
         private const val KEY_DEFAULT_CHOICE_COUNT = "default_choice_count"
+        private const val KEY_AUTOLOOP_MAX_ROUNDS = "autoloop_max_rounds"
+        private const val KEY_AUTOLOOP_MAX_ITEMS = "autoloop_max_items"
+        private const val KEY_AUTOLOOP_STEP_DELAY = "autoloop_step_delay"
+        private const val KEY_AUTOLOOP_PAGE_DELAY = "autoloop_page_delay"
+        private const val KEY_AUTOLOOP_SNAP_NODE = "autoloop_snap_node"
         private const val KEY_INPUT_PROMPT = "input_prompt"
         private const val KEY_CHOICE_PROMPT = "choice_prompt"
     }

@@ -66,6 +66,13 @@ data class AppConfig(
     val showResultToast: Boolean = true,
     val defaultChoiceCount: Int = 4,
 
+    // Experimental: Full Auto-Loop settings
+    val autoLoopMaxRounds: Int = 20,
+    val autoLoopMaxItemsPerPage: Int = 8,
+    val autoLoopStepDelayMs: Int = 700,
+    val autoLoopPageDelayMs: Int = 1300,
+    val autoLoopSnapToNode: Boolean = true,
+
     // Custom System Prompts
     val inputSystemPrompt: String = DEFAULT_INPUT_SYSTEM_PROMPT,
     val choiceSystemPrompt: String = DEFAULT_CHOICE_SYSTEM_PROMPT

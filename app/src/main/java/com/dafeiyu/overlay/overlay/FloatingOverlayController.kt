@@ -24,7 +24,10 @@ import com.dafeiyu.overlay.data.AppConfig
 import com.dafeiyu.overlay.data.ConfigStore
 import com.dafeiyu.overlay.network.ApiResult
 import com.dafeiyu.overlay.network.DeepSeekClient
+import com.dafeiyu.overlay.network.AutoLoopAnalysis
+import com.dafeiyu.overlay.system.CapturedScreen
 import com.dafeiyu.overlay.system.DaFeiYuAccessibilityService
+import com.dafeiyu.overlay.system.UiElementSnapshot
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
@@ -307,6 +310,28 @@ class FloatingOverlayController(
             }
         }
         container.addView(choiceBtn)
+
+        val autoLoopBtn = MonochromeOverlayViews.buildIconButton(
+            context = context,
+            iconRes = R.drawable.ic_autorenew,
+            label = "全自動迴圈 (實驗性)",
+            bgColor = palette.surface,
+            fgColor = palette.fg,
+            borderColor = palette.border
+        ) {
+            hapticTick()
+            removeViewSafe(menuView)
+            menuView = null
+            startAutoLoopWorkflow()
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = MonochromeOverlayViews.dp(context, 10)
+            }
+        }
+        container.addView(autoLoopBtn)
 
         // Utility row: Settings, Hide, Stop
         val utilRow = LinearLayout(context).apply {
@@ -736,6 +761,202 @@ class FloatingOverlayController(
             addViewSafe(captureView, fullScreenOverlayParams())
             updateCollectorHud()
         }
+    }
+
+    // =========================================================================
+    // WORKFLOW 3 (EXPERIMENTAL): 全自動迴圈 (逐步多道問題)
+    // 每輪 5 步驟：
+    //   1. 識別是否仍需繼續迴圈
+    //   2. 截圖並識別題型、問題與跨裝置精準位置 (0..1000 歸一化 + 無障礙元件中心吸附)
+    //   3. 按從上往下、從左往右順序完成一條尚未完成的項目
+    //   4. 識別此頁面是否還有尚未完成（如有，重複步驟 3 → 步驟 4）
+    //   5. 尋找並點擊前往下一題 / 下一頁 / 繼續按鈕
+    // =========================================================================
+    private fun startAutoLoopWorkflow() {
+        val cfg = configStore.current
+        if (!validateReadyForWorkflow(cfg)) return
+
+        activeWorkflowJob?.cancel()
+        removeAllTransientViews()
+
+        activeWorkflowJob = scope.launch {
+            var completedRounds = 0
+
+            for (round in 1..cfg.autoLoopMaxRounds) {
+                val a11y = DaFeiYuAccessibilityService.instance
+                if (a11y == null) {
+                    showStatusHud("無障礙服務已中斷，迴圈停止", autoDismissMs = 3500L)
+                    return@launch
+                }
+
+                // Step 1 & Step 2: Capture clean screen + live Accessibility tree & analyze
+                showStatusHud("迴圈 第 $round 輪 · 步驟 1-2：截圖與頁面分析中…", showCancel = true)
+                val initialScan = scanScreenAndAnalyze(cfg, a11y, emptyList(), round)
+                if (initialScan == null) {
+                    return@launch
+                }
+                var (screen, elements, analysis) = initialScan
+
+                // Step 1 check: Should we continue looping?
+                if (!analysis.shouldContinue) {
+                    val reason = analysis.stopReason.ifBlank { "未偵測到更多待處理題目" }
+                    showStatusHud("全自動迴圈結束（共 $completedRounds 輪）：$reason", autoDismissMs = 4500L)
+                    return@launch
+                }
+
+                // Step 3 & Step 4 inner loop: complete unfinished items top-to-bottom, left-to-right
+                val completedInRound = mutableListOf<String>()
+                var pageSteps = 0
+
+                while (analysis.pendingItems.isNotEmpty() && pageSteps < cfg.autoLoopMaxItemsPerPage) {
+                    pageSteps++
+                    val item = analysis.pendingItems.first()
+                    showStatusHud(
+                        "迴圈 第 $round 輪 · 步驟 3：處理「${item.summary.take(18)}」",
+                        showCancel = true
+                    )
+
+                    if (item.type == "input") {
+                        val target = item.targets.first()
+                        val pt = a11y.resolvePreciseTapPoint(
+                            elementId = target.elementId,
+                            normX = target.x,
+                            normY = target.y,
+                            physicalWidth = screen.physicalWidth,
+                            physicalHeight = screen.physicalHeight,
+                            elements = elements,
+                            snapToNode = cfg.autoLoopSnapToNode
+                        )
+                        val solved = DeepSeekClient.resolveEnvCards(
+                            item.answerText,
+                            cfg.envCards.filter { it.name.isNotBlank() }
+                        )
+                        if (solved.finalText.isNotBlank()) {
+                            a11y.tapAndInputText(pt.x, pt.y, solved.finalText, cfg.inputMethod)
+                        } else {
+                            a11y.performTap(pt.x, pt.y)
+                        }
+                        completedInRound.add("已填輸入框：${item.summary}")
+                    } else {
+                        // Choice item (single or multi-select)
+                        item.targets.forEachIndexed { idx, target ->
+                            val pt = a11y.resolvePreciseTapPoint(
+                                elementId = target.elementId,
+                                normX = target.x,
+                                normY = target.y,
+                                physicalWidth = screen.physicalWidth,
+                                physicalHeight = screen.physicalHeight,
+                                elements = elements,
+                                snapToNode = cfg.autoLoopSnapToNode
+                            )
+                            a11y.performTap(pt.x, pt.y)
+                            if (idx < item.targets.lastIndex) {
+                                delay(cfg.multiClickIntervalMs.toLong())
+                            }
+                        }
+                        completedInRound.add("已選選擇題：${item.summary}")
+                    }
+
+                    delay(cfg.autoLoopStepDelayMs.toLong())
+
+                    // Step 4: Re-check if there are still unfinished items on this page
+                    showStatusHud("迴圈 第 $round 輪 · 步驟 4：檢查此頁剩餘項目…", showCancel = true)
+                    val recheck = scanScreenAndAnalyze(cfg, a11y, completedInRound, round)
+                    if (recheck == null) {
+                        return@launch
+                    }
+                    screen = recheck.first
+                    elements = recheck.second
+                    analysis = recheck.third
+
+                    if (!analysis.shouldContinue) {
+                        completedRounds++
+                        val reason = analysis.stopReason.ifBlank { "已完成全部題目" }
+                        showStatusHud("全自動迴圈完成（共 $completedRounds 輪）：$reason", autoDismissMs = 4500L)
+                        return@launch
+                    }
+                }
+
+                // Step 5: Find and click Next / Continue / Submit button
+                val nextBtn = analysis.nextButton
+                if (nextBtn == null) {
+                    completedRounds++
+                    showStatusHud("全自動迴圈結束（共 $completedRounds 輪）：此頁無下一題／繼續按鈕", autoDismissMs = 4500L)
+                    return@launch
+                }
+
+                showStatusHud("迴圈 第 $round 輪 · 步驟 5：點擊「${nextBtn.label}」", showCancel = true)
+                val nextPt = a11y.resolvePreciseTapPoint(
+                    elementId = nextBtn.elementId,
+                    normX = nextBtn.x,
+                    normY = nextBtn.y,
+                    physicalWidth = screen.physicalWidth,
+                    physicalHeight = screen.physicalHeight,
+                    elements = elements,
+                    snapToNode = cfg.autoLoopSnapToNode
+                )
+                a11y.performTap(nextPt.x, nextPt.y)
+                completedRounds++
+
+                // Wait for next question / page transition
+                delay(cfg.autoLoopPageDelayMs.toLong())
+            }
+
+            showStatusHud("全自動迴圈已達上限（$completedRounds 輪）並自動停止", autoDismissMs = 4500L)
+        }
+    }
+
+    private suspend fun scanScreenAndAnalyze(
+        cfg: AppConfig,
+        a11y: DaFeiYuAccessibilityService,
+        completedInRound: List<String>,
+        round: Int
+    ): Triple<CapturedScreen, List<UiElementSnapshot>, AutoLoopAnalysis>? {
+        val screen = captureCleanScreenWithMetrics(cfg)
+        if (screen == null) {
+            showStatusHud("截圖失敗：請確認無障礙服務已啟用 (Android 11+)", autoDismissMs = 3500L)
+            return null
+        }
+        val elements = a11y.extractInteractiveElements(screen.physicalWidth, screen.physicalHeight)
+        return when (
+            val res = DeepSeekClient.analyzeAutoLoopPage(
+                config = cfg,
+                base64Jpeg = screen.base64Jpeg,
+                elements = elements,
+                completedInRound = completedInRound,
+                roundNumber = round
+            )
+        ) {
+            is ApiResult.Success -> Triple(screen, elements, res.data)
+            is ApiResult.Error -> {
+                showStatusHud("迴圈中斷：${res.message}", autoDismissMs = 4500L)
+                null
+            }
+        }
+    }
+
+    private suspend fun captureCleanScreenWithMetrics(cfg: AppConfig): CapturedScreen? {
+        val a11y = DaFeiYuAccessibilityService.instance ?: return null
+
+        val orbWasVisible = orbView?.visibility == View.VISIBLE
+        val hudWasVisible = hudView?.visibility == View.VISIBLE
+        orbView?.visibility = View.INVISIBLE
+        menuView?.visibility = View.INVISIBLE
+        choiceCounterView?.visibility = View.INVISIBLE
+        hudView?.visibility = View.INVISIBLE
+        captureCanvasView?.visibility = View.INVISIBLE
+
+        delay(cfg.screenshotHideDelayMs.toLong())
+
+        val screen = a11y.captureScreenWithMetrics(cfg.imageMaxWidth, cfg.imageJpegQuality)
+
+        if (orbWasVisible && !orbHiddenByUser) {
+            orbView?.visibility = View.VISIBLE
+        }
+        if (hudWasVisible) {
+            hudView?.visibility = View.VISIBLE
+        }
+        return screen
     }
 
     private suspend fun captureCleanScreenshot(cfg: AppConfig): String? {

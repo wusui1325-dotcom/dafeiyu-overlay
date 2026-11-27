@@ -41,9 +41,20 @@ jobs:
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "version_name=${TAG#v}" >> "$GITHUB_OUTPUT"
 
+      - name: Decode Fixed Release Keystore
+        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/dafeiyu-release.jks"
+          echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/dafeiyu-release.jks" >> "$GITHUB_ENV"
+
       - name: Build Release APK
         env:
           RELEASE_VERSION_NAME: ${{ steps.meta.outputs.version_name }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: gradle assembleRelease --stacktrace
 
       - name: Rename Release APK

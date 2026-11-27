@@ -20,6 +20,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AspectRatio
+import androidx.compose.material.icons.rounded.Autorenew
+import androidx.compose.material.icons.rounded.GpsFixed
 import androidx.compose.material.icons.rounded.Contrast
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Label
@@ -305,6 +307,47 @@ fun OverlaySettingsTab(
                 subtitle = "完成輸入或點擊後於頂部短暫顯示結果與複製按鈕",
                 checked = config.showResultToast,
                 onCheckedChange = { v -> configStore.update { it.copy(showResultToast = v) } }
+            )
+        }
+
+        // Experimental: Full Auto-Loop Tuning
+        MonoCard {
+            MonoSectionHeader(
+                icon = Icons.Rounded.Autorenew,
+                title = "全自動迴圈設定 (實驗性)",
+                subtitle = "推薦場景：逐步多道問題・支援跨裝置歸一化座標與元件吸附"
+            )
+            Spacer(modifier = Modifier.height(10.dp))
+            MonoSliderRow(
+                icon = Icons.Rounded.Autorenew,
+                title = "最大迴圈輪數",
+                valueLabel = "${config.autoLoopMaxRounds} 輪",
+                value = config.autoLoopMaxRounds.toFloat(),
+                valueRange = 1f..50f,
+                onValueChange = { v -> configStore.update { it.copy(autoLoopMaxRounds = v.roundToInt()) } }
+            )
+            MonoSliderRow(
+                icon = Icons.Rounded.Timer,
+                title = "單項完成後等待延遲",
+                valueLabel = "${config.autoLoopStepDelayMs} ms",
+                value = config.autoLoopStepDelayMs.toFloat(),
+                valueRange = 300f..2500f,
+                onValueChange = { v -> configStore.update { it.copy(autoLoopStepDelayMs = v.roundToInt()) } }
+            )
+            MonoSliderRow(
+                icon = Icons.Rounded.Timer,
+                title = "點擊下一題後換頁等待",
+                valueLabel = "${config.autoLoopPageDelayMs} ms",
+                value = config.autoLoopPageDelayMs.toFloat(),
+                valueRange = 500f..4000f,
+                onValueChange = { v -> configStore.update { it.copy(autoLoopPageDelayMs = v.roundToInt()) } }
+            )
+            MonoToggleRow(
+                icon = Icons.Rounded.GpsFixed,
+                title = "無障礙元件中心精準吸附",
+                subtitle = "結合 0..1000 螢幕歸一化座標與無障礙元件邊界，自動適配不同螢幕尺寸",
+                checked = config.autoLoopSnapToNode,
+                onCheckedChange = { v -> configStore.update { it.copy(autoLoopSnapToNode = v) } }
             )
         }
 

@@ -19,6 +19,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.Autorenew
 import androidx.compose.material.icons.rounded.Checklist
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Explore
@@ -204,6 +205,24 @@ fun HomeTab(
                     "2. 手動加減或一鍵點選「2 / 4」快捷數量並按確定\n" +
                     "3. 立即隱藏懸浮窗截圖發送 DeepSeek，同時由上往下、由左往右依序點擊各選項座標\n" +
                     "4. 模型回傳單選或多選編號後，系統自動依序點擊答案",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            MonoSectionHeader(
+                icon = Icons.Rounded.Autorenew,
+                title = "全自動迴圈 (實驗性)",
+                subtitle = "推薦場景：逐步的多道問題・隨時可點頂部停止鍵中斷"
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = "1. 識別畫面是否仍需繼續迴圈\n" +
+                    "2. 隱藏懸浮窗截圖，結合 0..1000 歸一化座標與無障礙元件識別題型與位置\n" +
+                    "3. 按從上往下、從左往右順序完成一條未完成項目（支援本機加密卡片替換）\n" +
+                    "4. 複查本頁是否仍有未完成項目，若有則重複步驟 3 → 4\n" +
+                    "5. 尋找並點擊「下一題 / 繼續」按鈕進入下一輪",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

@@ -2,6 +2,7 @@ package com.dafeiyu.overlay.network
 
 import com.dafeiyu.overlay.data.AppConfig
 import com.dafeiyu.overlay.data.EnvCard
+import com.dafeiyu.overlay.system.UiElementSnapshot
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -21,6 +22,36 @@ data class InputSolveResult(
     val finalText: String,
     val rawText: String,
     val substitutedCards: List<String>
+)
+
+data class AutoLoopTarget(
+    val elementId: Int?,
+    val x: Int,
+    val y: Int
+)
+
+data class AutoLoopItem(
+    val type: String, // "input" or "choice"
+    val summary: String,
+    val answerText: String,
+    val targets: List<AutoLoopTarget>
+) {
+    val sortY: Int get() = targets.firstOrNull()?.y ?: 500
+    val sortX: Int get() = targets.firstOrNull()?.x ?: 500
+}
+
+data class AutoLoopNextButton(
+    val elementId: Int?,
+    val x: Int,
+    val y: Int,
+    val label: String
+)
+
+data class AutoLoopAnalysis(
+    val shouldContinue: Boolean,
+    val stopReason: String,
+    val pendingItems: List<AutoLoopItem>,
+    val nextButton: AutoLoopNextButton?
 )
 
 object DeepSeekClient {
@@ -85,18 +116,8 @@ object DeepSeekClient {
         val baseSystemPrompt = config.inputSystemPrompt.ifBlank { AppConfig.DEFAULT_INPUT_SYSTEM_PROMPT }
         val baseUserPrompt = "請觀察截圖中需要填寫的輸入框或題目，只輸出應該輸入的最終內容文字，不要任何解釋或額外符號。"
 
-        // Append ONLY card names (NEVER values) at the end of prompt so DeepSeek outputs [卡片名字]
         val validCards = config.envCards.filter { it.name.isNotBlank() }
-        val envSuffix = if (validCards.isNotEmpty()) {
-            val namesList = validCards.joinToString("、") { "[${it.name}]" }
-            "\n\n【本機資料卡片】可用卡片名稱：$namesList。" +
-                "若輸入框需要填入上述個人資料，請直接在回覆中使用對應的 [卡片名字] 佔位符（例如 [${validCards.first().name}]），" +
-                "系統會於本機自動將 [卡片名字] 替換為實際資料；切勿自行猜測或編造實際值。"
-        } else {
-            ""
-        }
-
-        val finalUserPrompt = baseUserPrompt + envSuffix
+        val finalUserPrompt = baseUserPrompt + buildEnvCardsPromptSuffix(validCards)
 
         return when (val result = callVisionCompletion(config, baseSystemPrompt, finalUserPrompt, base64Jpeg)) {
             is ApiResult.Success -> {
@@ -107,13 +128,20 @@ object DeepSeekClient {
         }
     }
 
+    private fun buildEnvCardsPromptSuffix(validCards: List<EnvCard>): String {
+        if (validCards.isEmpty()) return ""
+        val namesList = validCards.joinToString("、") { "[${it.name}]" }
+        return "\n\n【本機資料卡片】可用卡片名稱：$namesList。" +
+            "若輸入框需要填入上述個人資料，請直接在回覆中使用對應的 [卡片名字] 佔位符（例如 [${validCards.first().name}]），" +
+            "系統會於本機自動將 [卡片名字] 替換為實際資料；切勿自行猜測或編造實際值。"
+    }
+
     fun resolveEnvCards(rawText: String, cards: List<EnvCard>): InputSolveResult {
         if (cards.isEmpty()) {
             return InputSolveResult(finalText = rawText, rawText = rawText, substitutedCards = emptyList())
         }
         var replaced = rawText
         val used = mutableListOf<String>()
-        // Sort longest names first to prevent partial overlap
         cards.sortedByDescending { it.name.length }.forEach { card ->
             val asciiToken = "[${card.name}]"
             val fullWidthToken = "［${card.name}］"
@@ -154,6 +182,165 @@ object DeepSeekClient {
         }
     }
 
+    /**
+     * Experimental Full Auto-Loop analyzer.
+     * Uses normalized 0..1000 coordinates + optional live Accessibility UI element IDs
+     * so taps are pixel-accurate across all screen sizes, DPIs, notches, and aspect ratios.
+     */
+    suspend fun analyzeAutoLoopPage(
+        config: AppConfig,
+        base64Jpeg: String,
+        elements: List<UiElementSnapshot>,
+        completedInRound: List<String>,
+        roundNumber: Int
+    ): ApiResult<AutoLoopAnalysis> {
+        val validCards = config.envCards.filter { it.name.isNotBlank() }
+
+        val elementsText = if (elements.isNotEmpty()) {
+            buildString {
+                append("\n【無障礙偵測到的互動元件清單（座標為 0..1000 歸一化值，優先回傳對應 element_id）】\n")
+                elements.forEach { el ->
+                    val checkedTag = if (el.isChecked) " [已選]" else ""
+                    append("#${el.id} (${el.kind})$checkedTag \"${el.label}\" center=(${el.normX},${el.normY}) box=[${el.normLeft},${el.normTop},${el.normRight},${el.normBottom}]\n")
+                }
+            }
+        } else {
+            "\n【無障礙元件清單為空，請完全依截圖視覺位置提供精準 0..1000 歸一化座標】\n"
+        }
+
+        val completedText = if (completedInRound.isNotEmpty()) {
+            "\n【本輪此頁剛完成項目（勿重複列入 pending_items）】\n" +
+                completedInRound.joinToString("\n") { "- $it" } + "\n"
+        } else {
+            ""
+        }
+
+        val systemPrompt = """
+你是 Android 逐步答題／表單全自動迴圈視覺分析引擎。請仔細觀察截圖與互動元件清單，只輸出嚴格合法的單一 JSON 物件，不要任何 Markdown 圍欄或額外文字。
+
+座標規範（極重要）：
+- 所有 x、y 座標皆為 0 到 1000 的整數歸一化座標，(0,0) 為截圖左上角，(1000,1000) 為截圖右下角。
+- 若目標對應到上方「互動元件清單」中的某元件，請務必填寫該元件的 "element_id"（整數）並填入其中心 (x, y)；若無對應元件則 element_id 填 null 並精準估算可點擊區域的視覺中心 (x, y)。
+
+JSON 格式：
+{
+  "should_continue": true,
+  "stop_reason": "",
+  "pending_items": [
+    {
+      "type": "input 或 choice",
+      "summary": "簡短描述此題或欄位",
+      "answer_text": "若為 input 填應輸入文字（可用 [卡片名字]）；choice 留空字串",
+      "targets": [
+        { "element_id": 12, "x": 500, "y": 420 }
+      ]
+    }
+  ],
+  "next_button": { "element_id": 25, "x": 500, "y": 910, "label": "下一題/繼續/提交" }
+}
+
+規則：
+1. 若畫面已到達完成頁、結算頁、感謝頁或已無任何待填項目也無下一頁／繼續按鈕，設 "should_continue": false 並在 stop_reason 說明原因。
+2. pending_items 僅列出「目前頁面上尚未完成」的題目／輸入欄／選項組，並嚴格按「從上往下、從左往右」排序；已填妥或已勾選的項目不要列入。
+3. choice 類型的 targets 填入正確答案對應的所有選項位置（單選 1 個，多選可多個）。
+4. input 類型的 targets 填入該輸入框的可點擊位置（1 個）。
+5. next_button 填入畫面中「下一題 / 下一頁 / 繼續 / 確定 / 提交」按鈕位置；若無則填 null。
+        """.trimIndent()
+
+        val userPrompt = "目前為第 $roundNumber 輪迴圈。請分析此頁面並回傳 JSON。" +
+            elementsText +
+            completedText +
+            buildEnvCardsPromptSuffix(validCards)
+
+        return when (val result = callVisionCompletion(config, systemPrompt, userPrompt, base64Jpeg)) {
+            is ApiResult.Success -> parseAutoLoopJson(result.data)
+            is ApiResult.Error -> result
+        }
+    }
+
+    private fun parseAutoLoopJson(raw: String): ApiResult<AutoLoopAnalysis> {
+        return try {
+            var cleaned = raw.trim()
+            if (cleaned.startsWith("```")) {
+                cleaned = cleaned.removePrefix("```")
+                val nl = cleaned.indexOf('\n')
+                if (nl >= 0) cleaned = cleaned.substring(nl + 1)
+                cleaned = cleaned.removeSuffix("```").trim()
+            }
+            val startIdx = cleaned.indexOf('{')
+            val endIdx = cleaned.lastIndexOf('}')
+            if (startIdx < 0 || endIdx <= startIdx) {
+                return ApiResult.Error("迴圈分析回傳非 JSON：「${cleaned.take(60)}」")
+            }
+            val root = JSONObject(cleaned.substring(startIdx, endIdx + 1))
+            val shouldContinue = root.optBoolean("should_continue", true)
+            val stopReason = root.optString("stop_reason", "").trim()
+
+            val itemsArr = root.optJSONArray("pending_items") ?: JSONArray()
+            val items = buildList {
+                for (i in 0 until itemsArr.length()) {
+                    val obj = itemsArr.optJSONObject(i) ?: continue
+                    val type = obj.optString("type", "").trim().lowercase()
+                    if (type != "input" && type != "choice") continue
+                    val summary = obj.optString("summary", "").trim().ifEmpty { "未命名項目 #${i + 1}" }
+                    val answerText = if (obj.isNull("answer_text")) "" else obj.optString("answer_text", "").trim()
+
+                    val targetsArr = obj.optJSONArray("targets") ?: JSONArray()
+                    val targets = buildList {
+                        for (j in 0 until targetsArr.length()) {
+                            val t = targetsArr.optJSONObject(j) ?: continue
+                            val elId = if (t.isNull("element_id")) null else t.optInt("element_id", -1).takeIf { it > 0 }
+                            val x = t.optInt("x", -1)
+                            val y = t.optInt("y", -1)
+                            if (elId != null || (x in 0..1000 && y in 0..1000)) {
+                                add(
+                                    AutoLoopTarget(
+                                        elementId = elId,
+                                        x = x.coerceIn(0, 1000),
+                                        y = y.coerceIn(0, 1000)
+                                    )
+                                )
+                            }
+                        }
+                    }
+                    if (targets.isNotEmpty()) {
+                        add(AutoLoopItem(type = type, summary = summary, answerText = answerText, targets = targets))
+                    }
+                }
+            }.sortedWith(
+                // Enforce top-to-bottom (row bucket 35/1000 = 3.5%), left-to-right ordering
+                compareBy<AutoLoopItem> { it.sortY / 35 }.thenBy { it.sortX }
+            )
+
+            val nextObj = if (root.isNull("next_button")) null else root.optJSONObject("next_button")
+            val nextButton = if (nextObj != null) {
+                val elId = if (nextObj.isNull("element_id")) null else nextObj.optInt("element_id", -1).takeIf { it > 0 }
+                val x = nextObj.optInt("x", -1)
+                val y = nextObj.optInt("y", -1)
+                val label = nextObj.optString("label", "下一題").trim().ifEmpty { "下一題" }
+                if (elId != null || (x in 0..1000 && y in 0..1000)) {
+                    AutoLoopNextButton(
+                        elementId = elId,
+                        x = x.coerceIn(0, 1000),
+                        y = y.coerceIn(0, 1000),
+                        label = label
+                    )
+                } else null
+            } else null
+
+            ApiResult.Success(
+                AutoLoopAnalysis(
+                    shouldContinue = shouldContinue,
+                    stopReason = stopReason,
+                    pendingItems = items,
+                    nextButton = nextButton
+                )
+            )
+        } catch (e: Exception) {
+            ApiResult.Error("解析迴圈 JSON 失敗：${e.localizedMessage ?: e.javaClass.simpleName}")
+        }
+    }
+
     private suspend fun callVisionCompletion(
         config: AppConfig,
         systemPrompt: String,
@@ -167,7 +354,7 @@ object DeepSeekClient {
 
         val url = "${normalizedBaseUrl(config.baseUrl)}/chat/completions"
         val modelId = config.modelId.trim().ifEmpty { AppConfig.DEFAULT_MODEL }
-        val initialMaxTokens = maxOf(config.maxTokens, 512)
+        val initialMaxTokens = maxOf(config.maxTokens, 1024)
 
         // Official DeepSeek API contract:
         // "thinking": { "type": "disabled" } explicitly disables deep thinking mode
@@ -188,7 +375,6 @@ object DeepSeekClient {
         when (firstAttempt) {
             is AttemptOutcome.Success -> ApiResult.Success(firstAttempt.content)
 
-            // Fallback for third-party OpenAI-compatible gateways that reject DeepSeek's thinking/reasoning fields
             is AttemptOutcome.UnsupportedThinkingParam -> {
                 when (
                     val retry = executeVisionRequest(
@@ -212,7 +398,6 @@ object DeepSeekClient {
                 }
             }
 
-            // Automatic retry once on transient empty content
             is AttemptOutcome.EmptyContent -> {
                 val retry = executeVisionRequest(
                     url = url,
