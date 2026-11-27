@@ -49,6 +49,7 @@ import androidx.compose.ui.unit.dp
 import com.dafeiyu.overlay.R
 import com.dafeiyu.overlay.data.AppConfig
 import com.dafeiyu.overlay.data.ConfigStore
+import com.dafeiyu.overlay.data.LongPressAction
 import com.dafeiyu.overlay.data.OverlayThemeMode
 import com.dafeiyu.overlay.ui.components.MonoCard
 import com.dafeiyu.overlay.ui.components.MonoChipButton
@@ -187,6 +188,33 @@ fun OverlaySettingsTab(
                 checked = config.hapticFeedback,
                 onCheckedChange = { v -> configStore.update { it.copy(hapticFeedback = v) } }
             )
+            MonoToggleRow(
+                icon = Icons.Rounded.GpsFixed,
+                title = "顯示點擊位置光環",
+                subtitle = "自動點擊選項、輸入框或下一題時短暫顯示黑白定位光環",
+                checked = config.showTapPulse,
+                onCheckedChange = { v -> configStore.update { it.copy(showTapPulse = v) } }
+            )
+            Spacer(modifier = Modifier.height(10.dp))
+            MonoSectionHeader(
+                icon = Icons.Rounded.TouchApp,
+                title = "長按懸浮球快捷動作",
+                subtitle = "按住懸浮球 0.5 秒直接啟動指定功能，免開選單"
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                LongPressAction.entries.forEach { action ->
+                    MonoChipButton(
+                        text = action.label,
+                        icon = Icons.Rounded.TouchApp,
+                        selected = config.orbLongPressAction == action,
+                        onClick = { configStore.update { it.copy(orbLongPressAction = action) } }
+                    )
+                }
+            }
         }
 
         // Position Presets

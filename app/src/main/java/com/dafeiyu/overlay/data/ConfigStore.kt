@@ -88,6 +88,10 @@ class ConfigStore(context: Context) {
             ?.let { runCatching { InputInjectionMethod.valueOf(it) }.getOrNull() }
             ?: InputInjectionMethod.AUTO
 
+        val longPressAction = prefs.getString(KEY_LONG_PRESS_ACTION, LongPressAction.QUICK_ASK.name)
+            ?.let { runCatching { LongPressAction.valueOf(it) }.getOrNull() }
+            ?: LongPressAction.QUICK_ASK
+
         val reasoningEffort = prefs.getString(KEY_REASONING_EFFORT, ReasoningEffort.NONE.name)
             ?.let { runCatching { ReasoningEffort.valueOf(it) }.getOrNull() }
             ?: ReasoningEffort.NONE
@@ -113,6 +117,8 @@ class ConfigStore(context: Context) {
             showPillLabel = prefs.getBoolean(KEY_SHOW_PILL_LABEL, false),
             overlayTheme = overlayTheme,
             hapticFeedback = prefs.getBoolean(KEY_HAPTIC_FEEDBACK, true),
+            orbLongPressAction = longPressAction,
+            showTapPulse = prefs.getBoolean(KEY_SHOW_TAP_PULSE, true),
             screenshotHideDelayMs = prefs.getInt(KEY_SCREENSHOT_HIDE_DELAY_MS, 140).coerceIn(60, 500),
             multiClickIntervalMs = prefs.getInt(KEY_MULTI_CLICK_INTERVAL_MS, 260).coerceIn(100, 1200),
             imageMaxWidth = prefs.getInt(KEY_IMAGE_MAX_WIDTH, 1280).coerceIn(640, 2048),
@@ -172,6 +178,8 @@ class ConfigStore(context: Context) {
             .putBoolean(KEY_SHOW_PILL_LABEL, cfg.showPillLabel)
             .putString(KEY_OVERLAY_THEME, cfg.overlayTheme.name)
             .putBoolean(KEY_HAPTIC_FEEDBACK, cfg.hapticFeedback)
+            .putString(KEY_LONG_PRESS_ACTION, cfg.orbLongPressAction.name)
+            .putBoolean(KEY_SHOW_TAP_PULSE, cfg.showTapPulse)
             .putInt(KEY_SCREENSHOT_HIDE_DELAY_MS, cfg.screenshotHideDelayMs)
             .putInt(KEY_MULTI_CLICK_INTERVAL_MS, cfg.multiClickIntervalMs)
             .putInt(KEY_IMAGE_MAX_WIDTH, cfg.imageMaxWidth)
@@ -211,6 +219,8 @@ class ConfigStore(context: Context) {
         private const val KEY_SHOW_PILL_LABEL = "show_pill_label"
         private const val KEY_OVERLAY_THEME = "overlay_theme"
         private const val KEY_HAPTIC_FEEDBACK = "haptic_feedback"
+        private const val KEY_LONG_PRESS_ACTION = "long_press_action"
+        private const val KEY_SHOW_TAP_PULSE = "show_tap_pulse"
         private const val KEY_SCREENSHOT_HIDE_DELAY_MS = "screenshot_hide_delay_ms"
         private const val KEY_MULTI_CLICK_INTERVAL_MS = "multi_click_interval_ms"
         private const val KEY_IMAGE_MAX_WIDTH = "image_max_width"

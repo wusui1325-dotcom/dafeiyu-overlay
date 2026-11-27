@@ -46,7 +46,9 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         runCatching { Shizuku.addRequestPermissionResultListener(shizukuPermissionListener) }
 
-        val configStore = (application as DaFeiYuApp).configStore
+        val app = application as DaFeiYuApp
+        val configStore = app.configStore
+        val historyStore = app.historyStore
 
         setContent {
             val config by configStore.config.collectAsState()
@@ -94,6 +96,7 @@ class MainActivity : ComponentActivity() {
                     OnboardingScreen(
                         config = config,
                         configStore = configStore,
+                        historyStore = historyStore,
                         permissions = permissions,
                         onRequestNotification = requestNotification,
                         onFinish = { launchOverlay ->
@@ -108,6 +111,7 @@ class MainActivity : ComponentActivity() {
                     MainScreen(
                         config = config,
                         configStore = configStore,
+                        historyStore = historyStore,
                         permissions = permissions,
                         overlayRunning = overlayRunning,
                         onToggleOverlay = toggleOverlay,

@@ -44,6 +44,7 @@ import androidx.compose.ui.unit.sp
 import com.dafeiyu.overlay.R
 import com.dafeiyu.overlay.data.AppConfig
 import com.dafeiyu.overlay.data.ConfigStore
+import com.dafeiyu.overlay.data.HistoryStore
 import com.dafeiyu.overlay.system.PermissionSnapshot
 
 private data class NavItem(
@@ -56,6 +57,7 @@ private data class NavItem(
 fun MainScreen(
     config: AppConfig,
     configStore: ConfigStore,
+    historyStore: HistoryStore,
     permissions: PermissionSnapshot,
     overlayRunning: Boolean,
     onToggleOverlay: () -> Unit,
@@ -151,6 +153,7 @@ fun MainScreen(
                 when (selectedTab) {
                     0 -> HomeTab(
                         config = config,
+                        historyStore = historyStore,
                         permissions = permissions,
                         overlayRunning = overlayRunning,
                         onToggleOverlay = onToggleOverlay,

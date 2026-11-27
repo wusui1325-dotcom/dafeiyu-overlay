@@ -311,6 +311,33 @@ class DaFeiYuAccessibilityService : AccessibilityService() {
         return PointF(rawX, rawY)
     }
 
+    suspend fun performScrollDown(physicalWidth: Int, physicalHeight: Int): Boolean {
+        val cx = physicalWidth * 0.5f
+        val startY = physicalHeight * 0.74f
+        val endY = physicalHeight * 0.28f
+        val path = Path().apply {
+            moveTo(cx, startY)
+            lineTo(cx, endY)
+        }
+        val stroke = GestureDescription.StrokeDescription(path, 0L, 320L)
+        val gesture = GestureDescription.Builder().addStroke(stroke).build()
+        return suspendCancellableCoroutine { cont ->
+            val dispatched = dispatchGesture(
+                gesture,
+                object : GestureResultCallback() {
+                    override fun onCompleted(gestureDescription: GestureDescription?) {
+                        if (cont.isActive) cont.resume(true)
+                    }
+                    override fun onCancelled(gestureDescription: GestureDescription?) {
+                        if (cont.isActive) cont.resume(false)
+                    }
+                },
+                null
+            )
+            if (!dispatched && cont.isActive) cont.resume(false)
+        }
+    }
+
     suspend fun performTap(x: Float, y: Float, durationMs: Long = 55L): Boolean {
         val path = Path().apply { moveTo(x, y) }
         val stroke = GestureDescription.StrokeDescription(path, 0L, durationMs)

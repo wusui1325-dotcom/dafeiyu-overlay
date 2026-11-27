@@ -5,15 +5,20 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
 import com.dafeiyu.overlay.data.ConfigStore
+import com.dafeiyu.overlay.data.HistoryStore
 
 class DaFeiYuApp : Application() {
 
     lateinit var configStore: ConfigStore
         private set
 
+    lateinit var historyStore: HistoryStore
+        private set
+
     override fun onCreate() {
         super.onCreate()
         configStore = ConfigStore(this)
+        historyStore = HistoryStore(this)
         createNotificationChannel()
     }
 

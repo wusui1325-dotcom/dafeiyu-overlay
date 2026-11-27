@@ -22,6 +22,14 @@ enum class ReasoningEffort(val apiValue: String, val label: String) {
     MAX("max", "極限 (max)")
 }
 
+enum class LongPressAction(val label: String) {
+    QUICK_ASK("快速看圖問答"),
+    INPUT("輸入類"),
+    CHOICE("選擇類"),
+    AUTO_LOOP("全自動迴圈"),
+    HIDE("隱藏懸浮球")
+}
+
 data class EnvCard(
     val id: String = UUID.randomUUID().toString(),
     val name: String,
@@ -56,6 +64,8 @@ data class AppConfig(
     val showPillLabel: Boolean = false,
     val overlayTheme: OverlayThemeMode = OverlayThemeMode.DARK,
     val hapticFeedback: Boolean = true,
+    val orbLongPressAction: LongPressAction = LongPressAction.QUICK_ASK,
+    val showTapPulse: Boolean = true,
 
     // Workflow & Execution Customization
     val screenshotHideDelayMs: Int = 140,

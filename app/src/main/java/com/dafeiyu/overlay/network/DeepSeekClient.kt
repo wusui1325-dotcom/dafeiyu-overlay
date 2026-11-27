@@ -52,7 +52,14 @@ data class AutoLoopAnalysis(
     val stopReason: String,
     val pendingItems: List<AutoLoopItem>,
     val nextButton: AutoLoopNextButton?,
-    val keyboardBlocking: Boolean = false
+    val keyboardBlocking: Boolean = false,
+    val needScrollDown: Boolean = false
+)
+
+data class ReleaseInfo(
+    val tagName: String,
+    val htmlUrl: String,
+    val apkUrl: String?
 )
 
 object DeepSeekClient {
@@ -160,6 +167,54 @@ object DeepSeekClient {
         )
     }
 
+    suspend fun solveQuickAsk(config: AppConfig, base64Jpeg: String): ApiResult<String> {
+        val systemPrompt =
+            "你是精煉高效的螢幕視覺助手。請根據截圖中的題目、文章、報錯或內容，" +
+                "以繁體中文直接給出最核心的解答、重點摘要或翻譯。" +
+                "請保持簡潔清晰（約 2 至 6 行），避免冗長廢話。"
+        val userPrompt = "請快速解析這張截圖的核心內容或直接給出解答。"
+        return callVisionCompletion(config, systemPrompt, userPrompt, base64Jpeg)
+    }
+
+    suspend fun checkLatestRelease(): ApiResult<ReleaseInfo> = withContext(Dispatchers.IO) {
+        val request = Request.Builder()
+            .url("https://api.github.com/repos/wusui1325-dotcom/dafeiyu-overlay/releases/latest")
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "DaFeiYuOverlay-Android")
+            .get()
+            .build()
+        try {
+            client.newCall(request).execute().use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) {
+                    return@withContext ApiResult.Error("檢查更新失敗 (HTTP ${resp.code})", resp.code)
+                }
+                val root = JSONObject(body)
+                val tag = root.optString("tag_name").trim()
+                val htmlUrl = root.optString("html_url").trim()
+                val assets = root.optJSONArray("assets")
+                var apkUrl: String? = null
+                if (assets != null) {
+                    for (i in 0 until assets.length()) {
+                        val a = assets.optJSONObject(i) ?: continue
+                        val name = a.optString("name")
+                        if (name.endsWith(".apk", ignoreCase = true)) {
+                            apkUrl = a.optString("browser_download_url").trim().ifEmpty { null }
+                            break
+                        }
+                    }
+                }
+                if (tag.isEmpty()) {
+                    ApiResult.Error("尚未找到正式發佈版本")
+                } else {
+                    ApiResult.Success(ReleaseInfo(tagName = tag, htmlUrl = htmlUrl, apkUrl = apkUrl))
+                }
+            }
+        } catch (e: Exception) {
+            ApiResult.Error("檢查更新連線失敗：${e.localizedMessage ?: e.javaClass.simpleName}")
+        }
+    }
+
     suspend fun solveChoice(
         config: AppConfig,
         base64Jpeg: String,
@@ -228,6 +283,7 @@ JSON 格式：
   "should_continue": true,
   "stop_reason": "",
   "keyboard_blocking": false,
+  "need_scroll_down": false,
   "pending_items": [
     {
       "type": "input 或 choice",
@@ -248,6 +304,7 @@ JSON 格式：
 4. input 類型的 targets 填入該輸入框的可點擊位置（1 個）。
 5. next_button 填入畫面中「下一題 / 下一頁 / 繼續 / 確定 / 提交」按鈕位置；若無則填 null。
 6. 若畫面下方有系統軟鍵盤遮擋（可能擋住「繼續／下一題」按鈕或下方欄位），請設 "keyboard_blocking": true 且保持 "should_continue": true，切勿因鍵盤遮擋而誤判結束。
+7. 若頁面為長表單、本畫面找不到「下一題／提交」按鈕且下方似乎仍有未顯示內容，請設 "need_scroll_down": true。
         """.trimIndent()
 
         val userPrompt = "目前為第 $roundNumber 輪迴圈。請分析此頁面並回傳 JSON。" +
@@ -337,7 +394,8 @@ JSON 格式：
                     stopReason = stopReason,
                     pendingItems = items,
                     nextButton = nextButton,
-                    keyboardBlocking = root.optBoolean("keyboard_blocking", false)
+                    keyboardBlocking = root.optBoolean("keyboard_blocking", false),
+                    needScrollDown = root.optBoolean("need_scroll_down", false)
                 )
             )
         } catch (e: Exception) {

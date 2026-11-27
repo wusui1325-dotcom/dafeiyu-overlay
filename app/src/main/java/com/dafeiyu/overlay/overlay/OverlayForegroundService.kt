@@ -28,6 +28,7 @@ class OverlayForegroundService : Service() {
         controller = FloatingOverlayController(
             context = this,
             configStore = app.configStore,
+            historyStore = app.historyStore,
             onStopServiceRequested = { stopSelf() }
         ).also { it.start() }
         _isRunning.value = true

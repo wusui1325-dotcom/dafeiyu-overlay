@@ -21,7 +21,11 @@ import androidx.core.content.ContextCompat
 import com.dafeiyu.overlay.MainActivity
 import com.dafeiyu.overlay.R
 import com.dafeiyu.overlay.data.AppConfig
+import android.graphics.drawable.GradientDrawable
+import android.widget.ScrollView
 import com.dafeiyu.overlay.data.ConfigStore
+import com.dafeiyu.overlay.data.HistoryStore
+import com.dafeiyu.overlay.data.LongPressAction
 import com.dafeiyu.overlay.network.ApiResult
 import com.dafeiyu.overlay.network.DeepSeekClient
 import com.dafeiyu.overlay.network.AutoLoopAnalysis
@@ -43,6 +47,7 @@ import kotlin.math.abs
 class FloatingOverlayController(
     private val context: Context,
     private val configStore: ConfigStore,
+    private val historyStore: HistoryStore,
     private val onStopServiceRequested: () -> Unit
 ) {
     private val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
@@ -53,7 +58,9 @@ class FloatingOverlayController(
     private var menuView: View? = null
     private var choiceCounterView: View? = null
     private var hudView: View? = null
+    private var answerCardView: View? = null
     private var captureCanvasView: MonochromeOverlayViews.CoordinateCaptureCanvasView? = null
+    private var longPressJob: Job? = null
 
     private var activeWorkflowJob: Job? = null
     private var hudAutoDismissJob: Job? = null
@@ -155,6 +162,7 @@ class FloatingOverlayController(
         var downRawX = 0f
         var downRawY = 0f
         var moved = false
+        var longPressTriggered = false
         val touchSlop = MonochromeOverlayViews.dp(context, 8)
 
         view.setOnTouchListener { _, event ->
@@ -165,6 +173,16 @@ class FloatingOverlayController(
                     downRawX = event.rawX
                     downRawY = event.rawY
                     moved = false
+                    longPressTriggered = false
+                    longPressJob?.cancel()
+                    longPressJob = scope.launch {
+                        delay(480L)
+                        if (!moved) {
+                            longPressTriggered = true
+                            hapticTick()
+                            triggerLongPressShortcut()
+                        }
+                    }
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
@@ -172,6 +190,7 @@ class FloatingOverlayController(
                     val dy = (event.rawY - downRawY).toInt()
                     if (abs(dx) > touchSlop || abs(dy) > touchSlop) {
                         moved = true
+                        longPressJob?.cancel()
                     }
                     if (moved) {
                         params.x = initialX + dx
@@ -180,11 +199,14 @@ class FloatingOverlayController(
                     }
                     true
                 }
-                MotionEvent.ACTION_UP -> {
-                    if (!moved) {
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    longPressJob?.cancel()
+                    if (longPressTriggered) {
+                        true
+                    } else if (!moved && event.action == MotionEvent.ACTION_UP) {
                         hapticTick()
                         toggleModeMenu()
-                    } else {
+                    } else if (moved) {
                         val metrics = context.resources.displayMetrics
                         val cfg = configStore.current
                         val finalX = if (cfg.snapToEdge) {
@@ -333,6 +355,28 @@ class FloatingOverlayController(
         }
         container.addView(autoLoopBtn)
 
+        val quickAskBtn = MonochromeOverlayViews.buildIconButton(
+            context = context,
+            iconRes = R.drawable.ic_lightbulb,
+            label = "快速看圖問答・懸浮解答",
+            bgColor = palette.surface,
+            fgColor = palette.fg,
+            borderColor = palette.border
+        ) {
+            hapticTick()
+            removeViewSafe(menuView)
+            menuView = null
+            startQuickAskWorkflow()
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = MonochromeOverlayViews.dp(context, 10)
+            }
+        }
+        container.addView(quickAskBtn)
+
         // Utility row: Settings, Hide, Stop
         val utilRow = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -438,6 +482,7 @@ class FloatingOverlayController(
                 }
 
                 showStatusHud("DeepSeek 分析輸入內容中…", showCancel = true)
+                val t0 = System.currentTimeMillis()
                 when (val result = DeepSeekClient.solveInput(cfg, base64)) {
                     is ApiResult.Success -> {
                         val solved = result.data
@@ -453,7 +498,9 @@ class FloatingOverlayController(
                             return@launch
                         }
                         showStatusHud("正在輸入：$displayPreview", showCancel = false)
+                        showTapPulse(rawX, rawY)
                         val injected = a11y.tapAndInputText(rawX, rawY, finalAnswer, cfg.inputMethod)
+                        historyStore.record("輸入類", cfg.modelId, System.currentTimeMillis() - t0, displayPreview, true)
                         if (cfg.showResultToast) {
                             val msg = if (injected) "已輸入：$displayPreview" else "已複製至剪貼簿：$displayPreview"
                             showStatusHud(
@@ -735,14 +782,16 @@ class FloatingOverlayController(
                                 indices.forEachIndexed { step, oneBasedIdx ->
                                     val pt = collectedPoints.getOrNull(oneBasedIdx - 1)
                                     if (pt != null) {
+                                        showTapPulse(pt.x, pt.y)
                                         a11y.performTap(pt.x, pt.y)
                                         if (step < indices.lastIndex) {
                                             delay(cfg.multiClickIntervalMs.toLong())
                                         }
                                     }
                                 }
+                                val label = indices.joinToString(", ") { "#$it" }
+                                historyStore.record("選擇類", cfg.modelId, 0L, "已選擇：$label", true)
                                 if (cfg.showResultToast) {
-                                    val label = indices.joinToString(", ") { "#$it" }
                                     showStatusHud("已選擇：$label", autoDismissMs = 3500L)
                                 } else {
                                     removeViewSafe(hudView)
@@ -845,6 +894,7 @@ class FloatingOverlayController(
                             cfg.envCards.filter { it.name.isNotBlank() }
                         )
                         if (solved.finalText.isNotBlank()) {
+                            showTapPulse(pt.x, pt.y)
                             a11y.tapAndInputText(pt.x, pt.y, solved.finalText, cfg.inputMethod)
                         } else {
                             a11y.performTap(pt.x, pt.y)
@@ -867,6 +917,7 @@ class FloatingOverlayController(
                                 elements = elements,
                                 snapToNode = cfg.autoLoopSnapToNode
                             )
+                            showTapPulse(pt.x, pt.y)
                             a11y.performTap(pt.x, pt.y)
                             if (idx < item.targets.lastIndex) {
                                 delay(cfg.multiClickIntervalMs.toLong())
@@ -908,9 +959,30 @@ class FloatingOverlayController(
                     analysis = rescan.third
                 }
 
+                // Auto-scroll down up to 2 times if page has scrollable content below the fold
+                var scrollAttempts = 0
+                while (analysis.nextButton == null && analysis.needScrollDown && scrollAttempts < 2) {
+                    scrollAttempts++
+                    showStatusHud("第 $round 輪 · 自動下滑尋找更多內容 ($scrollAttempts/2)…", showCancel = true, cancelLabel = "停止")
+                    a11y.performScrollDown(screen.physicalWidth, screen.physicalHeight)
+                    delay(550)
+                    val scrolledScan = scanScreenAndAnalyze(cfg, a11y, completedInRound, round) ?: return@launch
+                    screen = scrolledScan.first
+                    elements = scrolledScan.second
+                    analysis = scrolledScan.third
+                    if (analysis.pendingItems.isNotEmpty()) {
+                        break
+                    }
+                }
+                if (analysis.pendingItems.isNotEmpty()) {
+                    // New unfinished items revealed after scrolling -> continue to next loop iteration on same page
+                    continue
+                }
+
                 val nextBtn = analysis.nextButton
                 if (nextBtn == null) {
                     completedRounds++
+                    historyStore.record("全自動迴圈", cfg.modelId, 0L, "共完成 $completedRounds 輪（無更多繼續按鈕）", true)
                     showStatusHud("迴圈結束（共 $completedRounds 輪）· 未找到繼續按鈕", autoDismissMs = 4500L)
                     return@launch
                 }
@@ -925,6 +997,7 @@ class FloatingOverlayController(
                     elements = elements,
                     snapToNode = cfg.autoLoopSnapToNode
                 )
+                showTapPulse(nextPt.x, nextPt.y)
                 a11y.performTap(nextPt.x, nextPt.y)
                 completedRounds++
 
@@ -974,6 +1047,7 @@ class FloatingOverlayController(
         menuView?.visibility = View.INVISIBLE
         choiceCounterView?.visibility = View.INVISIBLE
         hudView?.visibility = View.INVISIBLE
+        answerCardView?.visibility = View.INVISIBLE
         captureCanvasView?.visibility = View.INVISIBLE
 
         delay(cfg.screenshotHideDelayMs.toLong())
@@ -998,6 +1072,7 @@ class FloatingOverlayController(
         menuView?.visibility = View.INVISIBLE
         choiceCounterView?.visibility = View.INVISIBLE
         hudView?.visibility = View.INVISIBLE
+        answerCardView?.visibility = View.INVISIBLE
         captureCanvasView?.visibility = View.INVISIBLE
 
         delay(cfg.screenshotHideDelayMs.toLong())
@@ -1173,11 +1248,195 @@ class FloatingOverlayController(
         }
     }
 
+    private fun triggerLongPressShortcut() {
+        when (configStore.current.orbLongPressAction) {
+            LongPressAction.QUICK_ASK -> startQuickAskWorkflow()
+            LongPressAction.INPUT -> startInputWorkflow()
+            LongPressAction.CHOICE -> showChoiceCounterDialog()
+            LongPressAction.AUTO_LOOP -> startAutoLoopWorkflow()
+            LongPressAction.HIDE -> toggleOrbVisibility()
+        }
+    }
+
+    private fun startQuickAskWorkflow() {
+        val cfg = configStore.current
+        if (!validateReadyForWorkflow(cfg)) return
+
+        activeWorkflowJob?.cancel()
+        removeAllTransientViews()
+
+        activeWorkflowJob = scope.launch {
+            val base64 = captureCleanScreenshot(cfg)
+            if (base64 == null) {
+                showStatusHud("截圖失敗：請確認無障礙服務已啟用 (Android 11+)", autoDismissMs = 3500L)
+                return@launch
+            }
+            showStatusHud("快速看圖問答：DeepSeek 解析中…", showCancel = true, cancelLabel = "取消")
+            val t0 = System.currentTimeMillis()
+            when (val res = DeepSeekClient.solveQuickAsk(cfg, base64)) {
+                is ApiResult.Success -> {
+                    val latency = System.currentTimeMillis() - t0
+                    historyStore.record("看圖問答", cfg.modelId, latency, res.data, true)
+                    removeViewSafe(hudView)
+                    hudView = null
+                    showAnswerCard(res.data, latency)
+                }
+                is ApiResult.Error -> {
+                    historyStore.record("看圖問答", cfg.modelId, System.currentTimeMillis() - t0, res.message, false)
+                    showStatusHud(res.message, autoDismissMs = 4500L)
+                }
+            }
+        }
+    }
+
+    private fun showAnswerCard(answerText: String, latencyMs: Long) {
+        removeViewSafe(answerCardView)
+        val cfg = configStore.current
+        val palette = MonochromeOverlayViews.paletteFor(context, cfg.overlayTheme)
+
+        val card = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            background = MonochromeOverlayViews.roundedBg(context, palette.bg, palette.border, 1, 24)
+            elevation = MonochromeOverlayViews.dp(context, 12).toFloat()
+            val pad = MonochromeOverlayViews.dp(context, 16)
+            setPadding(pad, pad, pad, pad)
+        }
+
+        val header = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 0, 0, MonochromeOverlayViews.dp(context, 10))
+        }
+        val icon = ImageView(context).apply {
+            setImageDrawable(ContextCompat.getDrawable(context, R.drawable.ic_lightbulb)?.mutate())
+            setColorFilter(palette.fg)
+            val s = MonochromeOverlayViews.dp(context, 18)
+            layoutParams = LinearLayout.LayoutParams(s, s).apply {
+                marginEnd = MonochromeOverlayViews.dp(context, 8)
+            }
+        }
+        val title = TextView(context).apply {
+            text = "快速看圖解答 · ${latencyMs}ms"
+            setTextColor(palette.fg)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        header.addView(icon)
+        header.addView(title)
+        card.addView(header)
+
+        val scroll = ScrollView(context).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = MonochromeOverlayViews.dp(context, 12)
+            }
+        }
+        val bodyTv = TextView(context).apply {
+            text = answerText
+            setTextColor(palette.fg)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            setLineSpacing(MonochromeOverlayViews.dp(context, 3).toFloat(), 1f)
+            maxHeight = MonochromeOverlayViews.dp(context, 280)
+        }
+        scroll.addView(bodyTv)
+        card.addView(scroll)
+
+        val actionRow = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+        }
+        val copyBtn = MonochromeOverlayViews.buildIconButton(
+            context = context,
+            iconRes = R.drawable.ic_copy,
+            label = "複製解答",
+            bgColor = palette.accentBg,
+            fgColor = palette.accentFg,
+            compact = true
+        ) {
+            DaFeiYuAccessibilityService.instance?.copyToClipboard(answerText)
+            showStatusHud("已複製解答至剪貼簿", autoDismissMs = 1600L)
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = MonochromeOverlayViews.dp(context, 8)
+            }
+        }
+        val closeBtn = MonochromeOverlayViews.buildIconButton(
+            context = context,
+            iconRes = R.drawable.ic_close,
+            label = "關閉",
+            bgColor = palette.surface,
+            fgColor = palette.fg,
+            borderColor = palette.border,
+            compact = true
+        ) {
+            removeViewSafe(answerCardView)
+            answerCardView = null
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        actionRow.addView(copyBtn)
+        actionRow.addView(closeBtn)
+        card.addView(actionRow)
+
+        val cardWidth = (context.resources.displayMetrics.widthPixels - MonochromeOverlayViews.dp(context, 48))
+            .coerceIn(MonochromeOverlayViews.dp(context, 260), MonochromeOverlayViews.dp(context, 360))
+        val params = WindowManager.LayoutParams(
+            cardWidth,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            overlayWindowType(),
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.CENTER
+        }
+        answerCardView = card
+        addViewSafe(card, params)
+    }
+
+    private fun showTapPulse(x: Float, y: Float) {
+        if (!configStore.current.showTapPulse) return
+        val cfg = configStore.current
+        val palette = MonochromeOverlayViews.paletteFor(context, cfg.overlayTheme)
+        val sizePx = MonochromeOverlayViews.dp(context, 30)
+
+        val ring = View(context).apply {
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(android.graphics.Color.TRANSPARENT)
+                setStroke(MonochromeOverlayViews.dp(context, 3), palette.accentBg)
+            }
+            alpha = 0.92f
+        }
+        val params = WindowManager.LayoutParams(
+            sizePx,
+            sizePx,
+            overlayWindowType(),
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            this.x = (x - sizePx / 2f).toInt()
+            this.y = (y - sizePx / 2f).toInt()
+        }
+        addViewSafe(ring, params)
+        scope.launch {
+            delay(360L)
+            removeViewSafe(ring)
+        }
+    }
+
     private fun removeAllTransientViews() {
         removeViewSafe(menuView); menuView = null
         removeViewSafe(choiceCounterView); choiceCounterView = null
         removeViewSafe(captureCanvasView); captureCanvasView = null
         removeViewSafe(hudView); hudView = null
+        removeViewSafe(answerCardView); answerCardView = null
     }
 
     private fun addViewSafe(view: View, params: WindowManager.LayoutParams) {
