@@ -1059,6 +1059,9 @@ class FloatingOverlayController(
 
         activeWorkflowJob = scope.launch {
             var completedRounds = 0
+            // Cross-step memory: what the loop did recently and WHY (intent), so the
+            // analyzer can understand screens it caused itself (e.g. an opened menu).
+            val stepHistory = mutableListOf<String>()
 
             for (round in 1..cfg.autoLoopMaxRounds) {
                 val a11y = DaFeiYuAccessibilityService.instance
@@ -1069,7 +1072,7 @@ class FloatingOverlayController(
 
                 // Step 1 & Step 2: Capture clean screen + live Accessibility tree & analyze
                 showStatusHud("第 $round 輪 · 步驟 1-2 分析頁面中…", showCancel = true, cancelLabel = "停止")
-                val initialScan = scanScreenAndAnalyze(cfg, a11y, emptyList(), round)
+                val initialScan = scanScreenAndAnalyze(cfg, a11y, emptyList(), round, stepHistory)
                 if (initialScan == null) {
                     return@launch
                 }
@@ -1081,7 +1084,7 @@ class FloatingOverlayController(
                 ) {
                     delay(260)
                     showStatusHud("第 $round 輪 · 已收合鍵盤，重新識別頁面…", showCancel = true, cancelLabel = "停止")
-                    val retryScan = scanScreenAndAnalyze(cfg, a11y, emptyList(), round) ?: return@launch
+                    val retryScan = scanScreenAndAnalyze(cfg, a11y, emptyList(), round, stepHistory) ?: return@launch
                     screen = retryScan.first
                     elements = retryScan.second
                     analysis = retryScan.third
@@ -1125,10 +1128,14 @@ class FloatingOverlayController(
                         if (solved.finalText.isNotBlank()) {
                             showTapPulse(pt.x, pt.y)
                             a11y.tapAndInputText(pt.x, pt.y, solved.finalText, cfg.inputMethod)
+                            recordStep(stepHistory, "已填寫輸入框「${item.summary}」，內容：「${solved.finalText.take(48)}」")
                         } else {
                             a11y.performTap(pt.x, pt.y)
+                            recordStep(stepHistory, "已點擊輸入框「${item.summary}」（無需填入文字）")
                         }
-                        // Dismiss soft keyboard so it never obscures lower items or the Next/Continue button
+                        // Drop input focus right away so the IME cannot bounce back
+                        // asynchronously, then dismiss any keyboard already on screen.
+                        a11y.clearFocusedInput()
                         delay(200)
                         if (a11y.dismissSoftKeyboardIfVisible()) {
                             delay(240)
@@ -1136,7 +1143,9 @@ class FloatingOverlayController(
                         completedInRound.add("已填輸入框：${item.summary}")
                     } else {
                         // Choice item (single or multi-select)
+                        var menuLikelyOpened = false
                         item.targets.forEachIndexed { idx, target ->
+                            if (menuLikelyOpened) return@forEachIndexed
                             val pt = a11y.resolvePreciseTapPoint(
                                 elementId = target.elementId,
                                 normX = target.x,
@@ -1150,16 +1159,43 @@ class FloatingOverlayController(
                             a11y.performTap(pt.x, pt.y)
                             if (idx < item.targets.lastIndex) {
                                 delay(cfg.multiClickIntervalMs.toLong())
+                                // A tap that opens a popup menu/dropdown invalidates the
+                                // remaining pre-menu coordinates; stop and re-analyze.
+                                val fresh = a11y.extractInteractiveElements(screen.physicalWidth, screen.physicalHeight)
+                                if (uiTreeChangedSignificantly(elements, fresh)) {
+                                    menuLikelyOpened = true
+                                }
                             }
                         }
-                        completedInRound.add("已選選擇題：${item.summary}")
+                        val answerHint = if (item.answerText.isNotBlank()) "，判定答案：「${item.answerText.take(48)}」" else ""
+                        if (menuLikelyOpened) {
+                            // Do NOT mark completed: the item still needs a follow-up
+                            // pick inside the menu the last tap just opened.
+                            recordStep(
+                                stepHistory,
+                                "已點擊「${item.summary}」並使畫面彈出新內容（可能是選單）$answerHint，該項目尚未完成，請在目前畫面中繼續完成它"
+                            )
+                        } else {
+                            // Detect a menu opened by the final tap as well
+                            delay(180)
+                            val fresh = a11y.extractInteractiveElements(screen.physicalWidth, screen.physicalHeight)
+                            if (uiTreeChangedSignificantly(elements, fresh)) {
+                                recordStep(
+                                    stepHistory,
+                                    "已點擊「${item.summary}」並使畫面彈出新內容（可能是選單）$answerHint，該項目尚未完成，請在目前畫面中繼續完成它"
+                                )
+                            } else {
+                                recordStep(stepHistory, "已完成選項組「${item.summary}」$answerHint（點擊 ${item.targets.size} 個位置）")
+                                completedInRound.add("已選選擇題：${item.summary}")
+                            }
+                        }
                     }
 
                     delay(cfg.autoLoopStepDelayMs.toLong())
 
                     // Step 4: Re-check if there are still unfinished items on this page
                     showStatusHud("第 $round 輪 · 步驟 4 複查本頁項目…", showCancel = true, cancelLabel = "停止")
-                    val recheck = scanScreenAndAnalyze(cfg, a11y, completedInRound, round)
+                    val recheck = scanScreenAndAnalyze(cfg, a11y, completedInRound, round, stepHistory)
                     if (recheck == null) {
                         return@launch
                     }
@@ -1182,7 +1218,7 @@ class FloatingOverlayController(
                 ) {
                     delay(280)
                     showStatusHud("第 $round 輪 · 已收合鍵盤，尋找繼續按鈕…", showCancel = true, cancelLabel = "停止")
-                    val rescan = scanScreenAndAnalyze(cfg, a11y, completedInRound, round) ?: return@launch
+                    val rescan = scanScreenAndAnalyze(cfg, a11y, completedInRound, round, stepHistory) ?: return@launch
                     screen = rescan.first
                     elements = rescan.second
                     analysis = rescan.third
@@ -1194,8 +1230,9 @@ class FloatingOverlayController(
                     scrollAttempts++
                     showStatusHud("第 $round 輪 · 自動下滑尋找更多內容 ($scrollAttempts/2)…", showCancel = true, cancelLabel = "停止")
                     a11y.performScrollDown(screen.physicalWidth, screen.physicalHeight)
+                    recordStep(stepHistory, "已向下滾動頁面以尋找更多內容（第 $scrollAttempts 次）")
                     delay(550)
-                    val scrolledScan = scanScreenAndAnalyze(cfg, a11y, completedInRound, round) ?: return@launch
+                    val scrolledScan = scanScreenAndAnalyze(cfg, a11y, completedInRound, round, stepHistory) ?: return@launch
                     screen = scrolledScan.first
                     elements = scrolledScan.second
                     analysis = scrolledScan.third
@@ -1228,6 +1265,7 @@ class FloatingOverlayController(
                 )
                 showTapPulse(nextPt.x, nextPt.y)
                 a11y.performTap(nextPt.x, nextPt.y)
+                recordStep(stepHistory, "已點擊「${nextBtn.label}」按鈕，前往下一頁／下一題")
                 completedRounds++
 
                 // Wait for next question / page transition
@@ -1242,7 +1280,8 @@ class FloatingOverlayController(
         cfg: AppConfig,
         a11y: DaFeiYuAccessibilityService,
         completedInRound: List<String>,
-        round: Int
+        round: Int,
+        stepHistory: List<String> = emptyList()
     ): Triple<CapturedScreen, List<UiElementSnapshot>, AutoLoopAnalysis>? {
         val screen = captureCleanScreenWithMetrics(cfg)
         if (screen == null) {
@@ -1257,7 +1296,8 @@ class FloatingOverlayController(
                 elements = elements,
                 completedInRound = completedInRound,
                 roundNumber = round,
-                pinnedImages = pinnedScreenshots.toList()
+                pinnedImages = pinnedScreenshots.toList(),
+                stepHistory = stepHistory
             )
         ) {
             is ApiResult.Success -> Triple(screen, elements, res.data)
@@ -1266,6 +1306,35 @@ class FloatingOverlayController(
                 null
             }
         }
+    }
+
+    private fun recordStep(stepHistory: MutableList<String>, step: String) {
+        stepHistory.add(step)
+        while (stepHistory.size > 8) {
+            stepHistory.removeAt(0)
+        }
+    }
+
+    /**
+     * Compares the interactive element tree before/after a tap. A popup menu, dropdown,
+     * dialog or page change replaces/moves many nodes, so a low Jaccard similarity of
+     * node bounds signatures means the UI changed drastically and old coordinates are stale.
+     */
+    private fun uiTreeChangedSignificantly(
+        before: List<UiElementSnapshot>,
+        after: List<UiElementSnapshot>
+    ): Boolean {
+        if (before.isEmpty() || after.isEmpty()) return false
+        fun signature(e: UiElementSnapshot): String {
+            val b = e.bounds
+            return "${e.kind}@${b.left / 12},${b.top / 12},${b.right / 12},${b.bottom / 12}"
+        }
+        val beforeSet = before.mapTo(HashSet()) { signature(it) }
+        val afterSet = after.mapTo(HashSet()) { signature(it) }
+        val intersection = beforeSet.count { it in afterSet }
+        val union = beforeSet.size + afterSet.size - intersection
+        if (union == 0) return false
+        return intersection.toFloat() / union.toFloat() < 0.55f
     }
 
     private suspend fun captureCleanScreenWithMetrics(cfg: AppConfig): CapturedScreen? {

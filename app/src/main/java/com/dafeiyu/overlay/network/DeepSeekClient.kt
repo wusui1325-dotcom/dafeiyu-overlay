@@ -606,7 +606,8 @@ object DeepSeekClient {
         elements: List<UiElementSnapshot>,
         completedInRound: List<String>,
         roundNumber: Int,
-        pinnedImages: List<String> = emptyList()
+        pinnedImages: List<String> = emptyList(),
+        stepHistory: List<String> = emptyList()
     ): ApiResult<AutoLoopAnalysis> {
         val validCards = config.envCards.filter { it.name.isNotBlank() }
 
@@ -620,6 +621,14 @@ object DeepSeekClient {
             }
         } else {
             "\n【無障礙元件清單為空，請完全依截圖視覺位置提供精準 0..1000 歸一化座標】\n"
+        }
+
+        val stepHistoryText = if (stepHistory.isNotEmpty()) {
+            "\n【近期已執行步驟（依時間順序，最後一筆剛執行完）】\n" +
+                stepHistory.joinToString("\n") { "- $it" } +
+                "\n（請對照最後一步的意圖與目前畫面：若畫面因上一步而出現選單／彈窗，請依其意圖繼續完成，切勿判定結束或返回。）\n"
+        } else {
+            ""
         }
 
         val completedText = if (completedInRound.isNotEmpty()) {
@@ -646,7 +655,7 @@ JSON 格式：
     {
       "type": "input 或 choice",
       "summary": "簡短描述此題或欄位",
-      "answer_text": "若為 input 填應輸入文字（可用 [卡片名字]）；choice 留空字串",
+      "answer_text": "若為 input 填應輸入文字（可用 [卡片名字]）；若為 choice 填你判斷的答案文字（便於跨步驟記憶），無法判斷可留空",
       "targets": [
         { "element_id": 12, "x": 500, "y": 420 }
       ]
@@ -663,10 +672,17 @@ JSON 格式：
 5. next_button 填入畫面中「下一題 / 下一頁 / 繼續 / 確定 / 提交」按鈕位置；若無則填 null。
 6. 若畫面下方有系統軟鍵盤遮擋（可能擋住「繼續／下一題」按鈕或下方欄位），請設 "keyboard_blocking": true 且保持 "should_continue": true，切勿因鍵盤遮擋而誤判結束。
 7. 若頁面為長表單、本畫面找不到「下一題／提交」按鈕且下方似乎仍有未顯示內容，請設 "need_scroll_down": true。
+8.【彈出選單／彈窗處理（極重要）】若截圖顯示彈出式選單、下拉清單、底部彈窗或對話框（通常是上一步點擊所開啟）：
+   - 它是目前任務流程的一部分："should_continue" 必須保持 true，絕對不可因選單出現而判定結束，也絕對不可提議返回上一頁或關閉選單。
+   - 請對照「近期已執行步驟」中最後一步的意圖，把選單中「應選的選項」列為 pending_items 最前面的一個 choice 項目（targets 指向選單內該選項的位置）。
+   - 若選單帶有「確定／完成」按鈕，將其填為 next_button。
+   - 選單背後被遮住的頁面項目仍算未完成，繼續保留在 pending_items 中。
+9. 對需要先點開才看得到選項的下拉欄位：第一次只回傳該欄位本身作為單一 target 的 choice 項目；待下一步截圖看到選單後，再依規則 8 回傳應選選項。
         """.trimIndent()
 
         val userPrompt = "目前為第 $roundNumber 輪迴圈。請分析此頁面並回傳 JSON。" +
             elementsText +
+            stepHistoryText +
             completedText +
             buildEnvCardsPromptSuffix(validCards)
 
