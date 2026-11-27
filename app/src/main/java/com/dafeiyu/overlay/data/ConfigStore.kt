@@ -8,6 +8,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONArray
+import org.json.JSONObject
+import java.util.UUID
 
 class ConfigStore(context: Context) {
 
@@ -56,6 +58,28 @@ class ConfigStore(context: Context) {
             AppConfig.DEFAULT_PRESET_MODELS
         }
 
+        val envCardsJson = prefs.getString(KEY_ENV_CARDS, null)
+        val envCards = if (!envCardsJson.isNullOrBlank()) {
+            try {
+                val arr = JSONArray(envCardsJson)
+                buildList {
+                    for (i in 0 until arr.length()) {
+                        val obj = arr.optJSONObject(i) ?: continue
+                        val name = obj.optString("name").trim()
+                        val value = obj.optString("value")
+                        val id = obj.optString("id").ifBlank { UUID.randomUUID().toString() }
+                        if (name.isNotEmpty()) {
+                            add(EnvCard(id = id, name = name, value = value))
+                        }
+                    }
+                }
+            } catch (_: Throwable) {
+                emptyList()
+            }
+        } else {
+            emptyList()
+        }
+
         val overlayTheme = prefs.getString(KEY_OVERLAY_THEME, OverlayThemeMode.DARK.name)
             ?.let { runCatching { OverlayThemeMode.valueOf(it) }.getOrNull() }
             ?: OverlayThemeMode.DARK
@@ -79,6 +103,7 @@ class ConfigStore(context: Context) {
             maxTokens = prefs.getInt(KEY_MAX_TOKENS, 1024).coerceIn(32, 4096),
             reasoningEffort = reasoningEffort,
             cachedModels = cachedModels,
+            envCards = envCards,
             appDarkTheme = prefs.getBoolean(KEY_APP_DARK_THEME, false),
             overlaySizeDp = prefs.getInt(KEY_OVERLAY_SIZE_DP, 52).coerceIn(36, 84),
             overlayAlpha = prefs.getFloat(KEY_OVERLAY_ALPHA, 0.92f).coerceIn(0.2f, 1.0f),
@@ -112,6 +137,17 @@ class ConfigStore(context: Context) {
         val modelsArr = JSONArray().apply {
             cfg.cachedModels.distinct().forEach { put(it) }
         }
+        val envCardsArr = JSONArray().apply {
+            cfg.envCards.forEach { card ->
+                put(
+                    JSONObject().apply {
+                        put("id", card.id)
+                        put("name", card.name)
+                        put("value", card.value)
+                    }
+                )
+            }
+        }
         prefs.edit()
             .putBoolean(KEY_ONBOARDING_COMPLETED, cfg.onboardingCompleted)
             .putString(KEY_API_KEY, cfg.apiKey)
@@ -121,6 +157,7 @@ class ConfigStore(context: Context) {
             .putInt(KEY_MAX_TOKENS, cfg.maxTokens)
             .putString(KEY_REASONING_EFFORT, cfg.reasoningEffort.name)
             .putString(KEY_CACHED_MODELS, modelsArr.toString())
+            .putString(KEY_ENV_CARDS, envCardsArr.toString())
             .putBoolean(KEY_APP_DARK_THEME, cfg.appDarkTheme)
             .putInt(KEY_OVERLAY_SIZE_DP, cfg.overlaySizeDp)
             .putFloat(KEY_OVERLAY_ALPHA, cfg.overlayAlpha)
@@ -154,6 +191,7 @@ class ConfigStore(context: Context) {
         private const val KEY_MAX_TOKENS = "max_tokens"
         private const val KEY_REASONING_EFFORT = "reasoning_effort"
         private const val KEY_CACHED_MODELS = "cached_models"
+        private const val KEY_ENV_CARDS = "env_cards"
         private const val KEY_APP_DARK_THEME = "app_dark_theme"
         private const val KEY_OVERLAY_SIZE_DP = "overlay_size_dp"
         private const val KEY_OVERLAY_ALPHA = "overlay_alpha"

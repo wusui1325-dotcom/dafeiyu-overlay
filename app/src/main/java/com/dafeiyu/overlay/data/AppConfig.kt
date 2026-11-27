@@ -1,5 +1,7 @@
 package com.dafeiyu.overlay.data
 
+import java.util.UUID
+
 enum class OverlayThemeMode(val label: String) {
     DARK("極簡黑"),
     LIGHT("純粹白"),
@@ -14,11 +16,17 @@ enum class InputInjectionMethod(val label: String) {
 }
 
 enum class ReasoningEffort(val apiValue: String, val label: String) {
-    NONE("none", "關閉思考 (極速)"),
-    LOW("low", "低強度"),
-    HIGH("high", "高強度"),
-    MAX("max", "最高強度")
+    NONE("none", "無 (none)"),
+    LOW("low", "低 (low)"),
+    HIGH("high", "高 (high)"),
+    MAX("max", "極限 (max)")
 }
+
+data class EnvCard(
+    val id: String = UUID.randomUUID().toString(),
+    val name: String,
+    val value: String
+)
 
 data class AppConfig(
     // Onboarding
@@ -32,6 +40,9 @@ data class AppConfig(
     val maxTokens: Int = 1024,
     val reasoningEffort: ReasoningEffort = ReasoningEffort.NONE,
     val cachedModels: List<String> = DEFAULT_PRESET_MODELS,
+
+    // Local Encrypted Data Vault (Env Cards — values NEVER sent to DeepSeek)
+    val envCards: List<EnvCard> = emptyList(),
 
     // App UI Theme
     val appDarkTheme: Boolean = false,

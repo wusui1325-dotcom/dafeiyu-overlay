@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -19,6 +20,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.ContactPage
 import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.Layers
@@ -38,6 +40,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.dafeiyu.overlay.R
 import com.dafeiyu.overlay.data.AppConfig
 import com.dafeiyu.overlay.data.ConfigStore
@@ -45,6 +48,7 @@ import com.dafeiyu.overlay.system.PermissionSnapshot
 
 private data class NavItem(
     val label: String,
+    val headerTitle: String,
     val icon: ImageVector
 )
 
@@ -61,10 +65,11 @@ fun MainScreen(
 ) {
     val navItems = remember {
         listOf(
-            NavItem("首頁", Icons.Rounded.Home),
-            NavItem("懸浮", Icons.Rounded.Layers),
-            NavItem("模型", Icons.Rounded.AutoAwesome),
-            NavItem("權限", Icons.Rounded.Security)
+            NavItem("首頁", "控制中心", Icons.Rounded.Home),
+            NavItem("懸浮", "懸浮外觀與行為", Icons.Rounded.Layers),
+            NavItem("資料", "儲存資料", Icons.Rounded.ContactPage),
+            NavItem("模型", "DeepSeek 模型與參數", Icons.Rounded.AutoAwesome),
+            NavItem("權限", "系統權限中心", Icons.Rounded.Security)
         )
     }
     var selectedTab by remember { mutableIntStateOf(0) }
@@ -107,7 +112,7 @@ fun MainScreen(
                             color = MaterialTheme.colorScheme.onBackground
                         )
                         Text(
-                            text = navItems[selectedTab].label,
+                            text = navItems[selectedTab].headerTitle,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -150,18 +155,22 @@ fun MainScreen(
                         overlayRunning = overlayRunning,
                         onToggleOverlay = onToggleOverlay,
                         onStartOnboarding = onStartOnboarding,
-                        onJumpToPermissions = { selectedTab = 3 },
-                        onJumpToModel = { selectedTab = 2 }
+                        onJumpToPermissions = { selectedTab = 4 },
+                        onJumpToModel = { selectedTab = 3 }
                     )
                     1 -> OverlaySettingsTab(
                         config = config,
                         configStore = configStore
                     )
-                    2 -> ModelSettingsTab(
+                    2 -> DataVaultTab(
                         config = config,
                         configStore = configStore
                     )
-                    3 -> PermissionsTab(
+                    3 -> ModelSettingsTab(
+                        config = config,
+                        configStore = configStore
+                    )
+                    4 -> PermissionsTab(
                         permissions = permissions,
                         onRefresh = onRefreshPermissions,
                         onRequestNotification = onRequestNotification
@@ -170,44 +179,45 @@ fun MainScreen(
             }
         }
 
-        // Floating Streamlined Monochrome Pill Bottom Navigation Bar
+        // Floating Streamlined Monochrome Pill Bottom Navigation Bar (5 Tabs)
         Row(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .navigationBarsPadding()
-                .padding(horizontal = 20.dp, vertical = 14.dp)
+                .padding(horizontal = 14.dp, vertical = 12.dp)
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(28.dp))
                 .background(MaterialTheme.colorScheme.surface)
                 .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(28.dp))
-                .padding(6.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                .padding(5.dp),
+            horizontalArrangement = Arrangement.spacedBy(3.dp)
         ) {
             navItems.forEachIndexed { index, item ->
                 val selected = selectedTab == index
                 val bg = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface
                 val fg = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
 
-                Row(
+                Column(
                     modifier = Modifier
                         .weight(1f)
                         .clip(RoundedCornerShape(22.dp))
                         .background(bg)
                         .clickable { selectedTab = index }
-                        .padding(vertical = 10.dp),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically
+                        .padding(vertical = 8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
                 ) {
                     Icon(
                         imageVector = item.icon,
-                        contentDescription = item.label,
+                        contentDescription = item.headerTitle,
                         tint = fg,
                         modifier = Modifier.size(18.dp)
                     )
-                    Spacer(modifier = Modifier.width(5.dp))
+                    Spacer(modifier = Modifier.height(2.dp))
                     Text(
                         text = item.label,
-                        style = MaterialTheme.typography.labelMedium,
+                        fontSize = 11.sp,
+                        lineHeight = 13.sp,
                         color = fg,
                         maxLines = 1
                     )

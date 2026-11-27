@@ -1,7 +1,7 @@
 package com.dafeiyu.overlay.network
 
 import com.dafeiyu.overlay.data.AppConfig
-import com.dafeiyu.overlay.data.ReasoningEffort
+import com.dafeiyu.overlay.data.EnvCard
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -16,6 +16,12 @@ sealed class ApiResult<out T> {
     data class Success<T>(val data: T) : ApiResult<T>()
     data class Error(val message: String, val code: Int = -1) : ApiResult<Nothing>()
 }
+
+data class InputSolveResult(
+    val finalText: String,
+    val rawText: String,
+    val substitutedCards: List<String>
+)
 
 object DeepSeekClient {
 
@@ -75,15 +81,54 @@ object DeepSeekClient {
             }
         }
 
-    suspend fun solveInput(config: AppConfig, base64Jpeg: String): ApiResult<String> {
-        val systemPrompt = config.inputSystemPrompt.ifBlank { AppConfig.DEFAULT_INPUT_SYSTEM_PROMPT }
-        val userPrompt = "請觀察截圖中需要填寫的輸入框或題目，只輸出應該輸入的最終內容文字，不要任何解釋或額外符號。"
-        return callVisionCompletion(config, systemPrompt, userPrompt, base64Jpeg).let { result ->
-            when (result) {
-                is ApiResult.Success -> ApiResult.Success(cleanInputAnswer(result.data))
-                is ApiResult.Error -> result
+    suspend fun solveInput(config: AppConfig, base64Jpeg: String): ApiResult<InputSolveResult> {
+        val baseSystemPrompt = config.inputSystemPrompt.ifBlank { AppConfig.DEFAULT_INPUT_SYSTEM_PROMPT }
+        val baseUserPrompt = "請觀察截圖中需要填寫的輸入框或題目，只輸出應該輸入的最終內容文字，不要任何解釋或額外符號。"
+
+        // Append ONLY card names (NEVER values) at the end of prompt so DeepSeek outputs [卡片名字]
+        val validCards = config.envCards.filter { it.name.isNotBlank() }
+        val envSuffix = if (validCards.isNotEmpty()) {
+            val namesList = validCards.joinToString("、") { "[${it.name}]" }
+            "\n\n【本機資料卡片】可用卡片名稱：$namesList。" +
+                "若輸入框需要填入上述個人資料，請直接在回覆中使用對應的 [卡片名字] 佔位符（例如 [${validCards.first().name}]），" +
+                "系統會於本機自動將 [卡片名字] 替換為實際資料；切勿自行猜測或編造實際值。"
+        } else {
+            ""
+        }
+
+        val finalUserPrompt = baseUserPrompt + envSuffix
+
+        return when (val result = callVisionCompletion(config, baseSystemPrompt, finalUserPrompt, base64Jpeg)) {
+            is ApiResult.Success -> {
+                val cleanedRaw = cleanInputAnswer(result.data)
+                ApiResult.Success(resolveEnvCards(cleanedRaw, validCards))
+            }
+            is ApiResult.Error -> result
+        }
+    }
+
+    fun resolveEnvCards(rawText: String, cards: List<EnvCard>): InputSolveResult {
+        if (cards.isEmpty()) {
+            return InputSolveResult(finalText = rawText, rawText = rawText, substitutedCards = emptyList())
+        }
+        var replaced = rawText
+        val used = mutableListOf<String>()
+        // Sort longest names first to prevent partial overlap
+        cards.sortedByDescending { it.name.length }.forEach { card ->
+            val asciiToken = "[${card.name}]"
+            val fullWidthToken = "［${card.name}］"
+            if (replaced.contains(asciiToken) || replaced.contains(fullWidthToken)) {
+                replaced = replaced
+                    .replace(asciiToken, card.value)
+                    .replace(fullWidthToken, card.value)
+                used.add(card.name)
             }
         }
+        return InputSolveResult(
+            finalText = replaced,
+            rawText = rawText,
+            substitutedCards = used
+        )
     }
 
     suspend fun solveChoice(
@@ -122,19 +167,11 @@ object DeepSeekClient {
 
         val url = "${normalizedBaseUrl(config.baseUrl)}/chat/completions"
         val modelId = config.modelId.trim().ifEmpty { AppConfig.DEFAULT_MODEL }
+        val initialMaxTokens = maxOf(config.maxTokens, 512)
 
-        // DeepSeek V4 defaults to thinking=high when reasoning_effort is omitted.
-        // Always pass reasoning_effort explicitly (including "none"), and ensure sufficient
-        // max_tokens headroom whenever thinking mode is enabled so reasoning_content never
-        // exhausts the budget before message.content is emitted.
-        val isThinkingRequested = config.reasoningEffort != ReasoningEffort.NONE ||
-            modelId.contains("reasoner", ignoreCase = true)
-        val initialMaxTokens = if (isThinkingRequested) {
-            maxOf(config.maxTokens, 2048)
-        } else {
-            maxOf(config.maxTokens, 512)
-        }
-
+        // Official DeepSeek API contract:
+        // "thinking": { "type": "disabled" } explicitly disables deep thinking mode
+        // and takes precedence over reasoning_effort across ALL effort tiers.
         val firstAttempt = executeVisionRequest(
             url = url,
             apiKey = cleanKey,
@@ -144,14 +181,15 @@ object DeepSeekClient {
             base64Jpeg = base64Jpeg,
             temperature = config.temperature.toDouble(),
             maxTokens = initialMaxTokens,
-            reasoningEffort = config.reasoningEffort.apiValue
+            reasoningEffort = config.reasoningEffort.apiValue,
+            disableThinking = true
         )
 
         when (firstAttempt) {
             is AttemptOutcome.Success -> ApiResult.Success(firstAttempt.content)
 
-            // Some third-party OpenAI-compatible gateways reject unknown "reasoning_effort".
-            is AttemptOutcome.UnsupportedReasoningParam -> {
+            // Fallback for third-party OpenAI-compatible gateways that reject DeepSeek's thinking/reasoning fields
+            is AttemptOutcome.UnsupportedThinkingParam -> {
                 when (
                     val retry = executeVisionRequest(
                         url = url,
@@ -162,19 +200,19 @@ object DeepSeekClient {
                         base64Jpeg = base64Jpeg,
                         temperature = config.temperature.toDouble(),
                         maxTokens = maxOf(initialMaxTokens, 2048),
-                        reasoningEffort = null
+                        reasoningEffort = null,
+                        disableThinking = false
                     )
                 ) {
                     is AttemptOutcome.Success -> ApiResult.Success(retry.content)
                     is AttemptOutcome.EmptyContent -> ApiResult.Error(formatEmptyError(retry.finishReason))
                     is AttemptOutcome.HttpError -> ApiResult.Error(retry.message, retry.code)
-                    is AttemptOutcome.UnsupportedReasoningParam -> ApiResult.Error(retry.message, retry.code)
+                    is AttemptOutcome.UnsupportedThinkingParam -> ApiResult.Error(retry.message, retry.code)
                     is AttemptOutcome.NetworkError -> ApiResult.Error(retry.message)
                 }
             }
 
-            // If empty content occurred (e.g., finish_reason=length or transient blank output),
-            // automatically retry once with reasoning_effort="none" and generous max_tokens.
+            // Automatic retry once on transient empty content
             is AttemptOutcome.EmptyContent -> {
                 val retry = executeVisionRequest(
                     url = url,
@@ -185,13 +223,14 @@ object DeepSeekClient {
                     base64Jpeg = base64Jpeg,
                     temperature = config.temperature.toDouble().coerceAtMost(0.3),
                     maxTokens = maxOf(config.maxTokens, 2048),
-                    reasoningEffort = ReasoningEffort.NONE.apiValue
+                    reasoningEffort = "none",
+                    disableThinking = true
                 )
                 when (retry) {
                     is AttemptOutcome.Success -> ApiResult.Success(retry.content)
                     is AttemptOutcome.EmptyContent -> ApiResult.Error(formatEmptyError(retry.finishReason))
                     is AttemptOutcome.HttpError -> ApiResult.Error(retry.message, retry.code)
-                    is AttemptOutcome.UnsupportedReasoningParam -> ApiResult.Error(retry.message, retry.code)
+                    is AttemptOutcome.UnsupportedThinkingParam -> ApiResult.Error(retry.message, retry.code)
                     is AttemptOutcome.NetworkError -> ApiResult.Error(retry.message)
                 }
             }
@@ -204,7 +243,7 @@ object DeepSeekClient {
     private sealed class AttemptOutcome {
         data class Success(val content: String) : AttemptOutcome()
         data class EmptyContent(val finishReason: String) : AttemptOutcome()
-        data class UnsupportedReasoningParam(val message: String, val code: Int) : AttemptOutcome()
+        data class UnsupportedThinkingParam(val message: String, val code: Int) : AttemptOutcome()
         data class HttpError(val message: String, val code: Int) : AttemptOutcome()
         data class NetworkError(val message: String) : AttemptOutcome()
     }
@@ -218,7 +257,8 @@ object DeepSeekClient {
         base64Jpeg: String,
         temperature: Double,
         maxTokens: Int,
-        reasoningEffort: String?
+        reasoningEffort: String?,
+        disableThinking: Boolean
     ): AttemptOutcome {
         val userContent = JSONArray().apply {
             put(
@@ -261,6 +301,9 @@ object DeepSeekClient {
             put("temperature", temperature)
             put("max_tokens", maxTokens)
             put("stream", false)
+            if (disableThinking) {
+                put("thinking", JSONObject().apply { put("type", "disabled") })
+            }
             if (reasoningEffort != null) {
                 put("reasoning_effort", reasoningEffort)
             }
@@ -279,10 +322,11 @@ object DeepSeekClient {
                 if (!resp.isSuccessful) {
                     val errMsg = parseErrorMessage(body, resp.code)
                     if (resp.code == 400 &&
-                        reasoningEffort != null &&
-                        body.contains("reasoning_effort", ignoreCase = true)
+                        (disableThinking || reasoningEffort != null) &&
+                        (body.contains("thinking", ignoreCase = true) ||
+                            body.contains("reasoning_effort", ignoreCase = true))
                     ) {
-                        return AttemptOutcome.UnsupportedReasoningParam(errMsg, resp.code)
+                        return AttemptOutcome.UnsupportedThinkingParam(errMsg, resp.code)
                     }
                     return AttemptOutcome.HttpError(errMsg, resp.code)
                 }

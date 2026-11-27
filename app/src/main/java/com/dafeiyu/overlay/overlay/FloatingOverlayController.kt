@@ -415,19 +415,25 @@ class FloatingOverlayController(
                 showStatusHud("DeepSeek 分析輸入內容中…", showCancel = true)
                 when (val result = DeepSeekClient.solveInput(cfg, base64)) {
                     is ApiResult.Success -> {
-                        val answer = result.data
+                        val solved = result.data
+                        val finalAnswer = solved.finalText
+                        val displayPreview = if (solved.substitutedCards.isNotEmpty()) {
+                            "${solved.rawText}（已本機替換）"
+                        } else {
+                            finalAnswer
+                        }
                         val a11y = DaFeiYuAccessibilityService.instance
                         if (a11y == null) {
                             showStatusHud("無障礙服務未連線", autoDismissMs = 3000L)
                             return@launch
                         }
-                        showStatusHud("正在輸入：$answer", showCancel = false)
-                        val injected = a11y.tapAndInputText(rawX, rawY, answer, cfg.inputMethod)
+                        showStatusHud("正在輸入：$displayPreview", showCancel = false)
+                        val injected = a11y.tapAndInputText(rawX, rawY, finalAnswer, cfg.inputMethod)
                         if (cfg.showResultToast) {
-                            val msg = if (injected) "已輸入：$answer" else "已複製至剪貼簿：$answer"
+                            val msg = if (injected) "已輸入：$displayPreview" else "已複製至剪貼簿：$displayPreview"
                             showStatusHud(
                                 message = msg,
-                                copyText = answer,
+                                copyText = finalAnswer,
                                 autoDismissMs = 4000L
                             )
                         } else {

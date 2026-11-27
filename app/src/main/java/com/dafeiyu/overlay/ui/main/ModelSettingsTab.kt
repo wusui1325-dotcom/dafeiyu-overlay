@@ -195,7 +195,7 @@ fun ModelSettingsTab(
             MonoSectionHeader(
                 icon = Icons.Rounded.Tune,
                 title = "思考強度 (Reasoning Effort)",
-                subtitle = "複雜題目可開啟 low / high"
+                subtitle = "所有檔位皆強制關閉深度思考 (thinking: disabled)"
             )
             Spacer(modifier = Modifier.height(10.dp))
             FlowRow(
