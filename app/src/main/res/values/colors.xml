@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="mono_black">#FF0A0A0A</color>
+    <color name="mono_white">#FFFFFFFF</color>
+    <color name="mono_surface">#FFF6F6F7</color>
+</resources>

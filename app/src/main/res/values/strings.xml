@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">大肥魚</string>
+    <string name="accessibility_service_label">大肥魚・無障礙輔助引擎</string>
+    <string name="accessibility_service_description">用於在「大肥魚」懸浮流程中進行免彈窗截圖、點擊指定選項座標與自動填入文字。完全無後端，所有資料僅依您手動觸發時直接傳送至您設定的 DeepSeek API。</string>
+</resources>

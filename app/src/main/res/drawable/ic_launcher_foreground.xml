@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#FF0A0A0A"
+        android:pathData="M20,0 H88 A20,20 0 0,1 108,20 V88 A20,20 0 0,1 88,108 H20 A20,20 0 0,1 0,88 V20 A20,20 0 0,1 20,0 Z" />
+    <!-- Streamlined geometric fish silhouette -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M78,54 C70,40 54,34 40,40 L26,30 L31,54 L26,78 L40,68 C54,74 70,68 78,54 Z" />
+    <!-- Minimalist eye dot -->
+    <path
+        android:fillColor="#FF0A0A0A"
+        android:pathData="M65,50 m-3.5,0 a3.5,3.5 0 1,0 7,0 a3.5,3.5 0 1,0 -7,0" />
+</vector>
