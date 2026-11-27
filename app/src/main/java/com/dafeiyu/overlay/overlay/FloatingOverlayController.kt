@@ -19,6 +19,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.core.content.ContextCompat
 import com.dafeiyu.overlay.MainActivity
+import com.dafeiyu.overlay.ui.web.WebTranslateActivity
 import com.dafeiyu.overlay.R
 import com.dafeiyu.overlay.data.AppConfig
 import android.graphics.drawable.GradientDrawable
@@ -520,6 +521,27 @@ class FloatingOverlayController(
         row45.addView(spatialBtn)
         row45.addView(voiceBtn)
         container.addView(row45)
+
+        // Row 4.8: Full Webpage DeepSeek Translator
+        val webTransBtn = MonochromeOverlayViews.buildIconButton(
+            context = context,
+            iconRes = R.drawable.ic_translate,
+            label = "網頁全文精譯 (告別機翻)",
+            bgColor = palette.surface,
+            fgColor = palette.fg,
+            borderColor = palette.border,
+            compact = true
+        ) {
+            hapticTick()
+            removeViewSafe(menuView); menuView = null
+            startWebTranslateWorkflow()
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = MonochromeOverlayViews.dp(context, 8) }
+        }
+        container.addView(webTransBtn)
 
         // Row 5: Cross-Page Visual Memory Pinning
         val pinRow = LinearLayout(context).apply {
@@ -2098,6 +2120,17 @@ class FloatingOverlayController(
         speechRecognizer = null
     }
 
+    private fun startWebTranslateWorkflow() {
+        val a11y = DaFeiYuAccessibilityService.instance
+        val detectedUrl = a11y?.extractBrowserUrl().orEmpty()
+        val fallbackParagraphs = if (detectedUrl.isBlank()) {
+            a11y?.extractVisiblePageParagraphs().orEmpty()
+        } else {
+            emptyList()
+        }
+        WebTranslateActivity.launch(context, detectedUrl, fallbackParagraphs)
+    }
+
     private fun triggerLongPressShortcut() {
         when (configStore.current.orbLongPressAction) {
             LongPressAction.QUICK_ASK -> startQuickAskWorkflow()
@@ -2108,6 +2141,7 @@ class FloatingOverlayController(
             LongPressAction.FREEFORM_AGENT -> showFreeformCommandBar()
             LongPressAction.SMART_REPLY -> showSmartReplyTonePicker()
             LongPressAction.SPATIAL_TRANSLATE -> startSpatialTranslateWorkflow()
+            LongPressAction.WEB_TRANSLATE -> startWebTranslateWorkflow()
             LongPressAction.VOICE_AGENT -> startVoiceAgentWorkflow()
             LongPressAction.HIDE -> toggleOrbVisibility()
         }

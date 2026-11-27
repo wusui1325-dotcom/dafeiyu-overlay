@@ -190,6 +190,110 @@ object DeepSeekClient {
     }
 
     /**
+     * High-quality literary/natural webpage paragraph translator (destroys stiff machine translation).
+     * Uses thinking: { type: "disabled" } for fast chunked translation with 1-to-1 paragraph alignment.
+     */
+    suspend fun translateWebParagraphs(
+        config: AppConfig,
+        paragraphs: List<String>,
+        styleLabel: String,
+        pageTitle: String
+    ): ApiResult<List<String>> = withContext(Dispatchers.IO) {
+        val cleanKey = config.apiKey.trim()
+        if (cleanKey.isEmpty()) return@withContext ApiResult.Error("請先設定 DeepSeek API Key")
+
+        val styleGuide = when (styleLabel) {
+            "專業術語" -> "準確專業，保留關鍵英文技術名詞與專有名詞，行文嚴謹流暢。"
+            "口語白話" -> "自然輕鬆、貼近香港與台灣日常閱讀語感，完全去除生硬翻譯腔。"
+            else -> "地道自然的繁體中文，兼顧信、達、雅，徹底消除機械翻譯腔，保留原文語氣與重點。"
+        }
+
+        val systemPrompt = """
+你是頂尖專業筆譯專家。請將使用者提供的網頁文章段落逐段翻譯為高品質繁體中文。
+翻譯風格要求：$styleGuide
+頁面標題上下文：$pageTitle
+嚴格輸出格式：只輸出合法的 JSON 字串陣列，陣列長度必須與輸入段落數完全一致（共 ${paragraphs.size} 個元素），不要輸出 Markdown 圍欄或任何額外說明。
+        """.trimIndent()
+
+        val inputJson = JSONArray().apply { paragraphs.forEach { put(it) } }.toString()
+        val userPrompt = "請逐段翻譯以下 JSON 陣列中的 ${paragraphs.size} 個段落：\n$inputJson"
+
+        val url = "${normalizedBaseUrl(config.baseUrl)}/chat/completions"
+        val modelId = config.modelId.trim().ifEmpty { AppConfig.DEFAULT_MODEL }
+
+        val messages = JSONArray().apply {
+            put(JSONObject().apply { put("role", "system"); put("content", systemPrompt) })
+            put(JSONObject().apply { put("role", "user"); put("content", userPrompt) })
+        }
+
+        fun sendTextReq(includeThinking: Boolean): ApiResult<String> {
+            val payload = JSONObject().apply {
+                put("model", modelId)
+                put("messages", messages)
+                put("temperature", 0.3)
+                put("max_tokens", maxOf(config.maxTokens, 3072))
+                put("stream", false)
+                if (includeThinking) {
+                    put("thinking", JSONObject().apply { put("type", "disabled") })
+                    put("reasoning_effort", "none")
+                }
+            }
+            val request = Request.Builder()
+                .url(url)
+                .header("Authorization", "Bearer $cleanKey")
+                .header("Content-Type", "application/json")
+                .post(payload.toString().toRequestBody(jsonMediaType))
+                .build()
+            return try {
+                client.newCall(request).execute().use { resp ->
+                    val body = resp.body?.string().orEmpty()
+                    if (!resp.isSuccessful) {
+                        return ApiResult.Error(parseErrorMessage(body, resp.code), resp.code)
+                    }
+                    val root = JSONObject(body)
+                    val msg = root.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")
+                    val content = extractMessageContent(msg)
+                    if (content.isEmpty()) ApiResult.Error("DeepSeek 回傳空白內容")
+                    else ApiResult.Success(content)
+                }
+            } catch (e: Exception) {
+                ApiResult.Error("翻譯請求失敗：${e.localizedMessage ?: e.javaClass.simpleName}")
+            }
+        }
+
+        val first = sendTextReq(true)
+        val rawRes = if (first is ApiResult.Error && first.code == 400) sendTextReq(false) else first
+
+        when (rawRes) {
+            is ApiResult.Success -> {
+                var cleaned = rawRes.data.trim()
+                if (cleaned.startsWith("```")) {
+                    cleaned = cleaned.removePrefix("```")
+                    val nl = cleaned.indexOf('\n')
+                    if (nl >= 0) cleaned = cleaned.substring(nl + 1)
+                    cleaned = cleaned.removeSuffix("```").trim()
+                }
+                val parsed = try {
+                    val sIdx = cleaned.indexOf('[')
+                    val eIdx = cleaned.lastIndexOf(']')
+                    if (sIdx >= 0 && eIdx > sIdx) {
+                        val arr = JSONArray(cleaned.substring(sIdx, eIdx + 1))
+                        buildList {
+                            for (i in 0 until arr.length()) add(arr.optString(i, "").trim())
+                        }
+                    } else {
+                        listOf(cleaned)
+                    }
+                } catch (_: Throwable) {
+                    listOf(cleaned)
+                }
+                ApiResult.Success(parsed)
+            }
+            is ApiResult.Error -> rawRes
+        }
+    }
+
+    /**
      * Spatial AR Translation: identifies foreign-language text blocks on screen with
      * 0..1000 bounding boxes and translates each concisely into Traditional Chinese.
      */

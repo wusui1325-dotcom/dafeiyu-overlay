@@ -541,6 +541,67 @@ class DaFeiYuAccessibilityService : AccessibilityService() {
         return node.performAction(AccessibilityNodeInfo.ACTION_PASTE)
     }
 
+    /**
+     * Attempts to read the current URL from Chrome / Edge / Firefox / Brave / Samsung Internet / Via
+     * address bars via the active Accessibility node tree.
+     */
+    fun extractBrowserUrl(): String? {
+        val root = rootInActiveWindow ?: return null
+        val urlBarHints = listOf("url_bar", "location_bar", "url_field", "mozac_browser_toolbar_url_view", "address")
+        var found: String? = null
+
+        fun walk(node: AccessibilityNodeInfo, depth: Int) {
+            if (depth > 16 || found != null) return
+            val idName = node.viewIdResourceName.orEmpty().lowercase()
+            val txt = node.text?.toString()?.trim().orEmpty()
+            if (txt.isNotEmpty()) {
+                val isUrlBar = urlBarHints.any { idName.contains(it) }
+                if (isUrlBar) {
+                    val norm = com.dafeiyu.overlay.network.WebPageFetcher.normalizeUrl(txt)
+                    if (norm != null) {
+                        found = norm
+                        return
+                    }
+                }
+                if (txt.startsWith("http://", true) || txt.startsWith("https://", true)) {
+                    found = com.dafeiyu.overlay.network.WebPageFetcher.normalizeUrl(txt)
+                    if (found != null) return
+                }
+            }
+            for (i in 0 until node.childCount) {
+                val c = node.getChild(i) ?: continue
+                walk(c, depth + 1)
+            }
+        }
+        walk(root, 0)
+        return found
+    }
+
+    /**
+     * Fallback extractor for in-app WebViews without an exposed URL bar.
+     */
+    fun extractVisiblePageParagraphs(maxParagraphs: Int = 35): List<String> {
+        val root = rootInActiveWindow ?: return emptyList()
+        if (root.packageName?.toString() == packageName) return emptyList()
+        val seen = HashSet<String>()
+        val result = mutableListOf<String>()
+
+        fun walk(node: AccessibilityNodeInfo, depth: Int) {
+            if (depth > 22 || result.size >= maxParagraphs) return
+            if (!node.isVisibleToUser) return
+            val txt = node.text?.toString()?.replace(Regex("\\s+"), " ")?.trim().orEmpty()
+            if (txt.length >= 16 && seen.add(txt)) {
+                result.add(txt)
+            }
+            for (i in 0 until node.childCount) {
+                val c = node.getChild(i) ?: continue
+                walk(c, depth + 1)
+            }
+        }
+        walk(root, 0)
+        return result
+    }
+
     fun isSoftKeyboardVisible(): Boolean {
         return try {
             windows?.any { it.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD } == true

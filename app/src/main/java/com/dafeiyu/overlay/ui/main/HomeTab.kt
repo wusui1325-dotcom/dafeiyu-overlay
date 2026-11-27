@@ -41,6 +41,8 @@ import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.SystemUpdate
 import androidx.compose.material.icons.rounded.Thermostat
+import androidx.compose.material.icons.rounded.Translate
+import com.dafeiyu.overlay.ui.web.WebTranslateActivity
 import androidx.compose.material.icons.rounded.VerifiedUser
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -144,6 +146,15 @@ fun HomeTab(
                 text = if (overlayRunning) "停止懸浮服務" else "啟動大肥魚懸浮球",
                 icon = if (overlayRunning) Icons.Rounded.Stop else Icons.Rounded.PlayArrow,
                 onClick = onToggleOverlay,
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            MonoOutlineButton(
+                text = "DeepSeek 網頁全文精譯（支援雙語對照）",
+                icon = Icons.Rounded.Translate,
+                onClick = { WebTranslateActivity.launch(context) },
                 modifier = Modifier.fillMaxWidth()
             )
 
