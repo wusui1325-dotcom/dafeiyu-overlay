@@ -21,6 +21,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Autorenew
 import androidx.compose.material.icons.rounded.Checklist
+import androidx.compose.material.icons.rounded.ContactPage
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Explore
 import androidx.compose.material.icons.rounded.Key
@@ -162,9 +163,9 @@ fun HomeTab(
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             StatusMetricPill(
-                icon = Icons.Rounded.Key,
-                label = "BYOK 金鑰",
-                value = if (config.apiKey.isNotBlank()) "已加密保存" else "尚未填寫",
+                icon = Icons.Rounded.ContactPage,
+                label = "儲存資料卡片",
+                value = if (config.envCards.isEmpty()) "尚未建立" else "${config.envCards.size} 張本機加密",
                 modifier = Modifier.weight(1f)
             )
             StatusMetricPill(

@@ -394,7 +394,7 @@ class FloatingOverlayController(
         container.addView(utilRow)
 
         val params = WindowManager.LayoutParams(
-            MonochromeOverlayViews.dp(context, 256),
+            MonochromeOverlayViews.dp(context, 276),
             WindowManager.LayoutParams.WRAP_CONTENT,
             overlayWindowType(),
             WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
@@ -790,17 +790,29 @@ class FloatingOverlayController(
                 }
 
                 // Step 1 & Step 2: Capture clean screen + live Accessibility tree & analyze
-                showStatusHud("迴圈 第 $round 輪 · 步驟 1-2：截圖與頁面分析中…", showCancel = true)
+                showStatusHud("第 $round 輪 · 步驟 1-2 分析頁面中…", showCancel = true, cancelLabel = "停止")
                 val initialScan = scanScreenAndAnalyze(cfg, a11y, emptyList(), round)
                 if (initialScan == null) {
                     return@launch
                 }
                 var (screen, elements, analysis) = initialScan
 
+                // If soft keyboard is obscuring the screen, dismiss it and re-scan before deciding
+                if ((analysis.keyboardBlocking || (!analysis.shouldContinue && analysis.nextButton == null)) &&
+                    a11y.dismissSoftKeyboardIfVisible()
+                ) {
+                    delay(260)
+                    showStatusHud("第 $round 輪 · 已收合鍵盤，重新識別頁面…", showCancel = true, cancelLabel = "停止")
+                    val retryScan = scanScreenAndAnalyze(cfg, a11y, emptyList(), round) ?: return@launch
+                    screen = retryScan.first
+                    elements = retryScan.second
+                    analysis = retryScan.third
+                }
+
                 // Step 1 check: Should we continue looping?
                 if (!analysis.shouldContinue) {
                     val reason = analysis.stopReason.ifBlank { "未偵測到更多待處理題目" }
-                    showStatusHud("全自動迴圈結束（共 $completedRounds 輪）：$reason", autoDismissMs = 4500L)
+                    showStatusHud("迴圈結束（共 $completedRounds 輪）· $reason", autoDismissMs = 4500L)
                     return@launch
                 }
 
@@ -812,8 +824,9 @@ class FloatingOverlayController(
                     pageSteps++
                     val item = analysis.pendingItems.first()
                     showStatusHud(
-                        "迴圈 第 $round 輪 · 步驟 3：處理「${item.summary.take(18)}」",
-                        showCancel = true
+                        "第 $round 輪 · 步驟 3 處理「${item.summary.take(16)}」",
+                        showCancel = true,
+                        cancelLabel = "停止"
                     )
 
                     if (item.type == "input") {
@@ -835,6 +848,11 @@ class FloatingOverlayController(
                             a11y.tapAndInputText(pt.x, pt.y, solved.finalText, cfg.inputMethod)
                         } else {
                             a11y.performTap(pt.x, pt.y)
+                        }
+                        // Dismiss soft keyboard so it never obscures lower items or the Next/Continue button
+                        delay(200)
+                        if (a11y.dismissSoftKeyboardIfVisible()) {
+                            delay(240)
                         }
                         completedInRound.add("已填輸入框：${item.summary}")
                     } else {
@@ -860,7 +878,7 @@ class FloatingOverlayController(
                     delay(cfg.autoLoopStepDelayMs.toLong())
 
                     // Step 4: Re-check if there are still unfinished items on this page
-                    showStatusHud("迴圈 第 $round 輪 · 步驟 4：檢查此頁剩餘項目…", showCancel = true)
+                    showStatusHud("第 $round 輪 · 步驟 4 複查本頁項目…", showCancel = true, cancelLabel = "停止")
                     val recheck = scanScreenAndAnalyze(cfg, a11y, completedInRound, round)
                     if (recheck == null) {
                         return@launch
@@ -878,14 +896,26 @@ class FloatingOverlayController(
                 }
 
                 // Step 5: Find and click Next / Continue / Submit button
+                // If next button was hidden behind soft keyboard, dismiss keyboard and re-scan once
+                if ((analysis.nextButton == null || analysis.keyboardBlocking) &&
+                    a11y.dismissSoftKeyboardIfVisible()
+                ) {
+                    delay(280)
+                    showStatusHud("第 $round 輪 · 已收合鍵盤，尋找繼續按鈕…", showCancel = true, cancelLabel = "停止")
+                    val rescan = scanScreenAndAnalyze(cfg, a11y, completedInRound, round) ?: return@launch
+                    screen = rescan.first
+                    elements = rescan.second
+                    analysis = rescan.third
+                }
+
                 val nextBtn = analysis.nextButton
                 if (nextBtn == null) {
                     completedRounds++
-                    showStatusHud("全自動迴圈結束（共 $completedRounds 輪）：此頁無下一題／繼續按鈕", autoDismissMs = 4500L)
+                    showStatusHud("迴圈結束（共 $completedRounds 輪）· 未找到繼續按鈕", autoDismissMs = 4500L)
                     return@launch
                 }
 
-                showStatusHud("迴圈 第 $round 輪 · 步驟 5：點擊「${nextBtn.label}」", showCancel = true)
+                showStatusHud("第 $round 輪 · 步驟 5 點擊「${nextBtn.label}」", showCancel = true, cancelLabel = "停止")
                 val nextPt = a11y.resolvePreciseTapPoint(
                     elementId = nextBtn.elementId,
                     normX = nextBtn.x,
@@ -996,6 +1026,7 @@ class FloatingOverlayController(
     private fun showStatusHud(
         message: String,
         showCancel: Boolean = false,
+        cancelLabel: String = "",
         onUndo: (() -> Unit)? = null,
         copyText: String? = null,
         autoDismissMs: Long? = null
@@ -1026,12 +1057,16 @@ class FloatingOverlayController(
         }
         pill.addView(icon)
 
+        val maxTextPx = (context.resources.displayMetrics.widthPixels - MonochromeOverlayViews.dp(context, 132))
+            .coerceIn(MonochromeOverlayViews.dp(context, 140), MonochromeOverlayViews.dp(context, 280))
         val tv = TextView(context).apply {
             text = message
             setTextColor(palette.fg)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             maxLines = 2
+            maxWidth = maxTextPx
+            ellipsize = android.text.TextUtils.TruncateAt.END
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
@@ -1082,9 +1117,9 @@ class FloatingOverlayController(
             val cancelBtn = MonochromeOverlayViews.buildIconButton(
                 context = context,
                 iconRes = R.drawable.ic_close,
-                label = "",
-                bgColor = palette.surface,
-                fgColor = palette.fg,
+                label = cancelLabel,
+                bgColor = if (cancelLabel.isNotEmpty()) palette.accentBg else palette.surface,
+                fgColor = if (cancelLabel.isNotEmpty()) palette.accentFg else palette.fg,
                 compact = true
             ) {
                 activeWorkflowJob?.cancel()
@@ -1107,7 +1142,9 @@ class FloatingOverlayController(
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-            y = MonochromeOverlayViews.dp(context, 48)
+            val statusBarRes = context.resources.getIdentifier("status_bar_height", "dimen", "android")
+            val statusBarH = if (statusBarRes > 0) context.resources.getDimensionPixelSize(statusBarRes) else MonochromeOverlayViews.dp(context, 28)
+            y = statusBarH + MonochromeOverlayViews.dp(context, 12)
         }
 
         hudView = pill

@@ -51,7 +51,8 @@ data class AutoLoopAnalysis(
     val shouldContinue: Boolean,
     val stopReason: String,
     val pendingItems: List<AutoLoopItem>,
-    val nextButton: AutoLoopNextButton?
+    val nextButton: AutoLoopNextButton?,
+    val keyboardBlocking: Boolean = false
 )
 
 object DeepSeekClient {
@@ -226,6 +227,7 @@ JSON 格式：
 {
   "should_continue": true,
   "stop_reason": "",
+  "keyboard_blocking": false,
   "pending_items": [
     {
       "type": "input 或 choice",
@@ -245,6 +247,7 @@ JSON 格式：
 3. choice 類型的 targets 填入正確答案對應的所有選項位置（單選 1 個，多選可多個）。
 4. input 類型的 targets 填入該輸入框的可點擊位置（1 個）。
 5. next_button 填入畫面中「下一題 / 下一頁 / 繼續 / 確定 / 提交」按鈕位置；若無則填 null。
+6. 若畫面下方有系統軟鍵盤遮擋（可能擋住「繼續／下一題」按鈕或下方欄位），請設 "keyboard_blocking": true 且保持 "should_continue": true，切勿因鍵盤遮擋而誤判結束。
         """.trimIndent()
 
         val userPrompt = "目前為第 $roundNumber 輪迴圈。請分析此頁面並回傳 JSON。" +
@@ -333,7 +336,8 @@ JSON 格式：
                     shouldContinue = shouldContinue,
                     stopReason = stopReason,
                     pendingItems = items,
-                    nextButton = nextButton
+                    nextButton = nextButton,
+                    keyboardBlocking = root.optBoolean("keyboard_blocking", false)
                 )
             )
         } catch (e: Exception) {

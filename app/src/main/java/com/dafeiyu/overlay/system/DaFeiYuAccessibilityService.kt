@@ -15,6 +15,7 @@ import android.util.Base64
 import android.view.Display
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityWindowInfo
 import com.dafeiyu.overlay.data.InputInjectionMethod
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -405,6 +406,38 @@ class DaFeiYuAccessibilityService : AccessibilityService() {
         copyToClipboard(text)
         val node = findTargetInputNode(x, y) ?: return false
         return node.performAction(AccessibilityNodeInfo.ACTION_PASTE)
+    }
+
+    fun isSoftKeyboardVisible(): Boolean {
+        return try {
+            windows?.any { it.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD } == true
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    /**
+     * Safely dismisses the Android soft keyboard ONLY when TYPE_INPUT_METHOD window
+     * is confirmed visible, preventing accidental back-navigation out of the active app.
+     */
+    suspend fun dismissSoftKeyboardIfVisible(): Boolean {
+        if (!isSoftKeyboardVisible()) return false
+
+        // Primary: GLOBAL_ACTION_BACK closes the open IME first without leaving the app
+        performGlobalAction(GLOBAL_ACTION_BACK)
+        delay(280)
+        if (!isSoftKeyboardVisible()) return true
+
+        // Fallback: briefly hide IME via SoftKeyboardController then restore AUTO
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            runCatching {
+                softKeyboardController.showMode = SHOW_MODE_HIDDEN
+                delay(240)
+                softKeyboardController.showMode = SHOW_MODE_AUTO
+            }
+            delay(180)
+        }
+        return !isSoftKeyboardVisible()
     }
 
     fun copyToClipboard(text: String) {
