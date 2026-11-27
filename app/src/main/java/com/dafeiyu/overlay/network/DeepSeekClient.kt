@@ -167,6 +167,14 @@ object DeepSeekClient {
         )
     }
 
+    suspend fun solveTranslate(config: AppConfig, base64Jpeg: String): ApiResult<String> {
+        val systemPrompt =
+            "你是精準的螢幕即時翻譯助手。請辨識圖片中的所有主要文字並自然流暢地翻譯為繁體中文，" +
+                "保持原意與簡潔排版，不要輸出多餘解說。"
+        val userPrompt = "請將圖片中的文字內容翻譯成繁體中文。"
+        return callVisionCompletion(config, systemPrompt, userPrompt, base64Jpeg)
+    }
+
     suspend fun solveQuickAsk(config: AppConfig, base64Jpeg: String): ApiResult<String> {
         val systemPrompt =
             "你是精煉高效的螢幕視覺助手。請根據截圖中的題目、文章、報錯或內容，" +

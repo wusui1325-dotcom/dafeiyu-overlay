@@ -67,6 +67,44 @@ class DaFeiYuAccessibilityService : AccessibilityService() {
         super.onDestroy()
     }
 
+    /**
+     * Captures the screen and crops strictly to the user-dragged physical rectangle
+     * for faster, higher-accuracy Region Crop Ask.
+     */
+    suspend fun captureCroppedRegionBase64(
+        cropRect: Rect,
+        maxWidth: Int,
+        jpegQuality: Int
+    ): String? {
+        val bitmap = captureScreenBitmap() ?: return null
+        return withContext(Dispatchers.Default) {
+            try {
+                val left = cropRect.left.coerceIn(0, bitmap.width - 1)
+                val top = cropRect.top.coerceIn(0, bitmap.height - 1)
+                val right = cropRect.right.coerceIn(left + 1, bitmap.width)
+                val bottom = cropRect.bottom.coerceIn(top + 1, bitmap.height)
+                val cropped = Bitmap.createBitmap(bitmap, left, top, right - left, bottom - top)
+                bitmap.recycle()
+
+                val scaled = if (cropped.width > maxWidth && maxWidth > 0) {
+                    val ratio = maxWidth.toFloat() / cropped.width.toFloat()
+                    val targetHeight = (cropped.height * ratio).toInt().coerceAtLeast(1)
+                    Bitmap.createScaledBitmap(cropped, maxWidth, targetHeight, true)
+                } else {
+                    cropped
+                }
+                val stream = ByteArrayOutputStream()
+                scaled.compress(Bitmap.CompressFormat.JPEG, jpegQuality.coerceIn(45, 95), stream)
+                if (scaled !== cropped) scaled.recycle()
+                cropped.recycle()
+                Base64.encodeToString(stream.toByteArray(), Base64.NO_WRAP)
+            } catch (_: Throwable) {
+                runCatching { bitmap.recycle() }
+                null
+            }
+        }
+    }
+
     suspend fun captureScreenshotBase64(maxWidth: Int, jpegQuality: Int): String? {
         return captureScreenWithMetrics(maxWidth, jpegQuality)?.base64Jpeg
     }
@@ -371,6 +409,10 @@ class DaFeiYuAccessibilityService : AccessibilityService() {
     ): Boolean {
         performTap(x, y)
         delay(240)
+        // Extra brief settle for WebView / Compose inputs if focus hasn't attached yet
+        if (findTargetInputNode(x, y) == null) {
+            delay(160)
+        }
 
         return when (method) {
             InputInjectionMethod.ACCESSIBILITY_SET_TEXT -> setTextViaAccessibility(x, y, text)

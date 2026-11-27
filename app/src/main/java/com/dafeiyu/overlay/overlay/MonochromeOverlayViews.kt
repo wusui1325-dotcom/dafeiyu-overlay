@@ -6,6 +6,8 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.PointF
+import android.graphics.Rect
+import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.util.TypedValue
@@ -267,6 +269,103 @@ object MonochromeOverlayViews {
             if (event.action == MotionEvent.ACTION_UP) {
                 onTapRecorded(event.rawX, event.rawY)
                 return true
+            }
+            return true
+        }
+    }
+
+    class RegionSelectCanvasView(
+        context: Context,
+        private val palette: OverlayPalette,
+        private val onRegionSelected: (Rect) -> Unit
+    ) : View(context) {
+
+        private var startX = 0f
+        private var startY = 0f
+        private var currX = 0f
+        private var currY = 0f
+        private var dragging = false
+
+        private val scrimPaint = Paint().apply {
+            color = Color.argb(95, 0, 0, 0)
+        }
+        private val clearFillPaint = Paint().apply {
+            color = Color.argb(24, 255, 255, 255)
+        }
+        private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = dp(context, 2).toFloat()
+            color = Color.WHITE
+        }
+        private val cornerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
+            color = Color.WHITE
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            val w = width.toFloat()
+            val h = height.toFloat()
+            if (!dragging) {
+                canvas.drawRect(0f, 0f, w, h, scrimPaint)
+                return
+            }
+            val loc = IntArray(2)
+            getLocationOnScreen(loc)
+            val ox = loc[0].toFloat()
+            val oy = loc[1].toFloat()
+
+            val left = minOf(startX, currX) - ox
+            val top = minOf(startY, currY) - oy
+            val right = maxOf(startX, currX) - ox
+            val bottom = maxOf(startY, currY) - oy
+
+            // Dim outside region
+            canvas.drawRect(0f, 0f, w, top, scrimPaint)
+            canvas.drawRect(0f, bottom, w, h, scrimPaint)
+            canvas.drawRect(0f, top, left, bottom, scrimPaint)
+            canvas.drawRect(right, top, w, bottom, scrimPaint)
+
+            val rect = RectF(left, top, right, bottom)
+            canvas.drawRect(rect, clearFillPaint)
+            canvas.drawRect(rect, borderPaint)
+
+            val r = dp(context, 4).toFloat()
+            canvas.drawCircle(left, top, r, cornerPaint)
+            canvas.drawCircle(right, top, r, cornerPaint)
+            canvas.drawCircle(left, bottom, r, cornerPaint)
+            canvas.drawCircle(right, bottom, r, cornerPaint)
+        }
+
+        override fun onTouchEvent(event: MotionEvent): Boolean {
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    startX = event.rawX
+                    startY = event.rawY
+                    currX = startX
+                    currY = startY
+                    dragging = true
+                    invalidate()
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    currX = event.rawX
+                    currY = event.rawY
+                    invalidate()
+                }
+                MotionEvent.ACTION_UP -> {
+                    currX = event.rawX
+                    currY = event.rawY
+                    dragging = false
+                    invalidate()
+                    val left = minOf(startX, currX).toInt()
+                    val top = minOf(startY, currY).toInt()
+                    val right = maxOf(startX, currX).toInt()
+                    val bottom = maxOf(startY, currY).toInt()
+                    val minSize = dp(context, 28)
+                    if (right - left >= minSize && bottom - top >= minSize) {
+                        onRegionSelected(Rect(left, top, right, bottom))
+                    }
+                }
             }
             return true
         }

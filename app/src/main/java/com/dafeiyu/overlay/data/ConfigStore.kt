@@ -144,6 +144,82 @@ class ConfigStore(context: Context) {
         persist(next)
     }
 
+    /**
+     * Exports non-secret app preferences as JSON (strictly excludes API Key & EnvCard values).
+     */
+    fun exportSafeConfigJson(): String {
+        val c = current
+        return JSONObject().apply {
+            put("baseUrl", c.baseUrl)
+            put("modelId", c.modelId)
+            put("temperature", c.temperature.toDouble())
+            put("maxTokens", c.maxTokens)
+            put("reasoningEffort", c.reasoningEffort.name)
+            put("appDarkTheme", c.appDarkTheme)
+            put("overlaySizeDp", c.overlaySizeDp)
+            put("overlayAlpha", c.overlayAlpha.toDouble())
+            put("snapToEdge", c.snapToEdge)
+            put("showPillLabel", c.showPillLabel)
+            put("overlayTheme", c.overlayTheme.name)
+            put("hapticFeedback", c.hapticFeedback)
+            put("orbLongPressAction", c.orbLongPressAction.name)
+            put("showTapPulse", c.showTapPulse)
+            put("screenshotHideDelayMs", c.screenshotHideDelayMs)
+            put("multiClickIntervalMs", c.multiClickIntervalMs)
+            put("imageMaxWidth", c.imageMaxWidth)
+            put("imageJpegQuality", c.imageJpegQuality)
+            put("inputMethod", c.inputMethod.name)
+            put("showResultToast", c.showResultToast)
+            put("defaultChoiceCount", c.defaultChoiceCount)
+            put("autoLoopMaxRounds", c.autoLoopMaxRounds)
+            put("autoLoopStepDelayMs", c.autoLoopStepDelayMs)
+            put("autoLoopPageDelayMs", c.autoLoopPageDelayMs)
+            put("autoLoopSnapToNode", c.autoLoopSnapToNode)
+            put("inputSystemPrompt", c.inputSystemPrompt)
+            put("choiceSystemPrompt", c.choiceSystemPrompt)
+        }.toString(2)
+    }
+
+    fun importSafeConfigJson(rawJson: String): Boolean {
+        return try {
+            val o = JSONObject(rawJson.trim())
+            update { c ->
+                c.copy(
+                    baseUrl = o.optString("baseUrl", c.baseUrl).ifBlank { c.baseUrl },
+                    modelId = o.optString("modelId", c.modelId).ifBlank { c.modelId },
+                    temperature = o.optDouble("temperature", c.temperature.toDouble()).toFloat().coerceIn(0f, 2f),
+                    maxTokens = o.optInt("maxTokens", c.maxTokens).coerceIn(32, 4096),
+                    reasoningEffort = runCatching { ReasoningEffort.valueOf(o.optString("reasoningEffort")) }.getOrDefault(c.reasoningEffort),
+                    appDarkTheme = o.optBoolean("appDarkTheme", c.appDarkTheme),
+                    overlaySizeDp = o.optInt("overlaySizeDp", c.overlaySizeDp).coerceIn(36, 84),
+                    overlayAlpha = o.optDouble("overlayAlpha", c.overlayAlpha.toDouble()).toFloat().coerceIn(0.2f, 1f),
+                    snapToEdge = o.optBoolean("snapToEdge", c.snapToEdge),
+                    showPillLabel = o.optBoolean("showPillLabel", c.showPillLabel),
+                    overlayTheme = runCatching { OverlayThemeMode.valueOf(o.optString("overlayTheme")) }.getOrDefault(c.overlayTheme),
+                    hapticFeedback = o.optBoolean("hapticFeedback", c.hapticFeedback),
+                    orbLongPressAction = runCatching { LongPressAction.valueOf(o.optString("orbLongPressAction")) }.getOrDefault(c.orbLongPressAction),
+                    showTapPulse = o.optBoolean("showTapPulse", c.showTapPulse),
+                    screenshotHideDelayMs = o.optInt("screenshotHideDelayMs", c.screenshotHideDelayMs).coerceIn(60, 500),
+                    multiClickIntervalMs = o.optInt("multiClickIntervalMs", c.multiClickIntervalMs).coerceIn(100, 1200),
+                    imageMaxWidth = o.optInt("imageMaxWidth", c.imageMaxWidth).coerceIn(640, 2048),
+                    imageJpegQuality = o.optInt("imageJpegQuality", c.imageJpegQuality).coerceIn(45, 95),
+                    inputMethod = runCatching { InputInjectionMethod.valueOf(o.optString("inputMethod")) }.getOrDefault(c.inputMethod),
+                    showResultToast = o.optBoolean("showResultToast", c.showResultToast),
+                    defaultChoiceCount = o.optInt("defaultChoiceCount", c.defaultChoiceCount).coerceIn(2, 10),
+                    autoLoopMaxRounds = o.optInt("autoLoopMaxRounds", c.autoLoopMaxRounds).coerceIn(1, 50),
+                    autoLoopStepDelayMs = o.optInt("autoLoopStepDelayMs", c.autoLoopStepDelayMs).coerceIn(250, 3000),
+                    autoLoopPageDelayMs = o.optInt("autoLoopPageDelayMs", c.autoLoopPageDelayMs).coerceIn(400, 5000),
+                    autoLoopSnapToNode = o.optBoolean("autoLoopSnapToNode", c.autoLoopSnapToNode),
+                    inputSystemPrompt = o.optString("inputSystemPrompt", c.inputSystemPrompt).ifBlank { c.inputSystemPrompt },
+                    choiceSystemPrompt = o.optString("choiceSystemPrompt", c.choiceSystemPrompt).ifBlank { c.choiceSystemPrompt }
+                )
+            }
+            true
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
     private fun persist(cfg: AppConfig) {
         val modelsArr = JSONArray().apply {
             cfg.cachedModels.distinct().forEach { put(it) }

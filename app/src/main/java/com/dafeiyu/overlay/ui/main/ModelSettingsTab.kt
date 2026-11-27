@@ -13,7 +13,16 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.widget.Toast
+import androidx.compose.foundation.layout.Row
 import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.Upload
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.material.icons.rounded.EditNote
 import androidx.compose.material.icons.rounded.Key
 import androidx.compose.material.icons.rounded.Keyboard
@@ -61,6 +70,7 @@ fun ModelSettingsTab(
     config: AppConfig,
     configStore: ConfigStore
 ) {
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var showApiKey by remember { mutableStateOf(false) }
     var fetchingModels by remember { mutableStateOf(false) }
@@ -277,6 +287,48 @@ fun ModelSettingsTab(
                     }
                 }
             )
+        }
+
+        // Safe Config Export / Import (Excludes API Key & Env Card values)
+        MonoCard {
+            MonoSectionHeader(
+                icon = Icons.Rounded.Upload,
+                title = "設定檔備份與還原 (JSON)",
+                subtitle = "僅匯出外觀、模型參數與提示詞，絕不含 API Key 或私密卡片"
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                MonoOutlineButton(
+                    text = "匯出至剪貼簿",
+                    icon = Icons.Rounded.ContentCopy,
+                    modifier = Modifier.weight(1f),
+                    onClick = {
+                        val json = configStore.exportSafeConfigJson()
+                        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                        cm?.setPrimaryClip(ClipData.newPlainText("DaFeiYu Config", json))
+                        Toast.makeText(context, "已複製設定 JSON 至剪貼簿（不含私密金鑰）", Toast.LENGTH_SHORT).show()
+                    }
+                )
+                MonoOutlineButton(
+                    text = "從剪貼簿還原",
+                    icon = Icons.Rounded.Download,
+                    modifier = Modifier.weight(1f),
+                    onClick = {
+                        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                        val clipText = cm?.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString().orEmpty()
+                        if (clipText.isBlank()) {
+                            Toast.makeText(context, "剪貼簿中沒有設定 JSON", Toast.LENGTH_SHORT).show()
+                        } else if (configStore.importSafeConfigJson(clipText)) {
+                            Toast.makeText(context, "已成功還原設定", Toast.LENGTH_SHORT).show()
+                        } else {
+                            Toast.makeText(context, "JSON 格式無效，無法還原", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                )
+            }
         }
 
         Spacer(modifier = Modifier.height(80.dp))

@@ -24,6 +24,7 @@ enum class ReasoningEffort(val apiValue: String, val label: String) {
 
 enum class LongPressAction(val label: String) {
     QUICK_ASK("快速看圖問答"),
+    REGION_CROP("框選區域解析"),
     INPUT("輸入類"),
     CHOICE("選擇類"),
     AUTO_LOOP("全自動迴圈"),

@@ -5,6 +5,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
@@ -52,6 +53,11 @@ class OverlayForegroundService : Service() {
         controller?.destroy()
         controller = null
         super.onDestroy()
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        controller?.onScreenConfigurationChanged()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null

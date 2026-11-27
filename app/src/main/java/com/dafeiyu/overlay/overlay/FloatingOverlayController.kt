@@ -60,6 +60,7 @@ class FloatingOverlayController(
     private var hudView: View? = null
     private var answerCardView: View? = null
     private var captureCanvasView: MonochromeOverlayViews.CoordinateCaptureCanvasView? = null
+    private var regionSelectView: MonochromeOverlayViews.RegionSelectCanvasView? = null
     private var longPressJob: Job? = null
 
     private var activeWorkflowJob: Job? = null
@@ -91,6 +92,28 @@ class FloatingOverlayController(
         removeViewSafe(orbView)
         orbView = null
         scope.cancel()
+    }
+
+    fun onScreenConfigurationChanged() {
+        val view = orbView ?: return
+        val params = orbParams ?: return
+        val dm = context.resources.displayMetrics
+        val margin = MonochromeOverlayViews.dp(context, 12)
+        val w = view.width.coerceAtLeast(MonochromeOverlayViews.dp(context, configStore.current.overlaySizeDp))
+        val h = view.height.coerceAtLeast(MonochromeOverlayViews.dp(context, configStore.current.overlaySizeDp))
+        val clampedX = if (configStore.current.snapToEdge) {
+            if (params.x + w / 2 < dm.widthPixels / 2) margin
+            else (dm.widthPixels - w - margin).coerceAtLeast(margin)
+        } else {
+            params.x.coerceIn(0, (dm.widthPixels - w).coerceAtLeast(0))
+        }
+        val clampedY = params.y.coerceIn(
+            MonochromeOverlayViews.dp(context, 32),
+            (dm.heightPixels - h - MonochromeOverlayViews.dp(context, 48)).coerceAtLeast(32)
+        )
+        params.x = clampedX
+        params.y = clampedY
+        runCatching { windowManager.updateViewLayout(view, params) }
     }
 
     fun toggleOrbVisibility() {
@@ -377,6 +400,28 @@ class FloatingOverlayController(
         }
         container.addView(quickAskBtn)
 
+        val regionCropBtn = MonochromeOverlayViews.buildIconButton(
+            context = context,
+            iconRes = R.drawable.ic_crop,
+            label = "框選區域解析・翻譯",
+            bgColor = palette.surface,
+            fgColor = palette.fg,
+            borderColor = palette.border
+        ) {
+            hapticTick()
+            removeViewSafe(menuView)
+            menuView = null
+            startRegionCropWorkflow()
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = MonochromeOverlayViews.dp(context, 10)
+            }
+        }
+        container.addView(regionCropBtn)
+
         // Utility row: Settings, Hide, Stop
         val utilRow = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -448,6 +493,13 @@ class FloatingOverlayController(
             gravity = Gravity.CENTER
         }
 
+        container.setOnTouchListener { _, ev ->
+            if (ev.action == MotionEvent.ACTION_OUTSIDE) {
+                removeViewSafe(menuView)
+                menuView = null
+                true
+            } else false
+        }
         menuView = container
         addViewSafe(container, params)
     }
@@ -704,12 +756,20 @@ class FloatingOverlayController(
             MonochromeOverlayViews.dp(context, 268),
             WindowManager.LayoutParams.WRAP_CONTENT,
             overlayWindowType(),
-            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.CENTER
         }
 
+        container.setOnTouchListener { _, ev ->
+            if (ev.action == MotionEvent.ACTION_OUTSIDE) {
+                removeViewSafe(choiceCounterView)
+                choiceCounterView = null
+                true
+            } else false
+        }
         choiceCounterView = container
         addViewSafe(container, params)
     }
@@ -1251,6 +1311,7 @@ class FloatingOverlayController(
     private fun triggerLongPressShortcut() {
         when (configStore.current.orbLongPressAction) {
             LongPressAction.QUICK_ASK -> startQuickAskWorkflow()
+            LongPressAction.REGION_CROP -> startRegionCropWorkflow()
             LongPressAction.INPUT -> startInputWorkflow()
             LongPressAction.CHOICE -> showChoiceCounterDialog()
             LongPressAction.AUTO_LOOP -> startAutoLoopWorkflow()
@@ -1279,7 +1340,7 @@ class FloatingOverlayController(
                     historyStore.record("看圖問答", cfg.modelId, latency, res.data, true)
                     removeViewSafe(hudView)
                     hudView = null
-                    showAnswerCard(res.data, latency)
+                    showAnswerCard(res.data, latency, base64)
                 }
                 is ApiResult.Error -> {
                     historyStore.record("看圖問答", cfg.modelId, System.currentTimeMillis() - t0, res.message, false)
@@ -1289,7 +1350,64 @@ class FloatingOverlayController(
         }
     }
 
-    private fun showAnswerCard(answerText: String, latencyMs: Long) {
+    private fun startRegionCropWorkflow() {
+        val cfg = configStore.current
+        if (!validateReadyForWorkflow(cfg)) return
+
+        activeWorkflowJob?.cancel()
+        removeAllTransientViews()
+
+        val palette = MonochromeOverlayViews.paletteFor(context, cfg.overlayTheme)
+        val selector = MonochromeOverlayViews.RegionSelectCanvasView(
+            context = context,
+            palette = palette
+        ) { rect ->
+            hapticTick()
+            removeViewSafe(regionSelectView)
+            regionSelectView = null
+
+            activeWorkflowJob = scope.launch {
+                val a11y = DaFeiYuAccessibilityService.instance
+                if (a11y == null) {
+                    showStatusHud("無障礙服務未連線", autoDismissMs = 3000L)
+                    return@launch
+                }
+                val orbWasVisible = orbView?.visibility == View.VISIBLE
+                orbView?.visibility = View.INVISIBLE
+                hudView?.visibility = View.INVISIBLE
+                delay(cfg.screenshotHideDelayMs.toLong())
+
+                val croppedB64 = a11y.captureCroppedRegionBase64(rect, cfg.imageMaxWidth, cfg.imageJpegQuality)
+                if (orbWasVisible && !orbHiddenByUser) orbView?.visibility = View.VISIBLE
+
+                if (croppedB64 == null) {
+                    showStatusHud("區域截圖失敗：請確認無障礙服務已啟用", autoDismissMs = 3500L)
+                    return@launch
+                }
+                showStatusHud("框選區域解析中…", showCancel = true, cancelLabel = "取消")
+                val t0 = System.currentTimeMillis()
+                when (val res = DeepSeekClient.solveQuickAsk(cfg, croppedB64)) {
+                    is ApiResult.Success -> {
+                        val latency = System.currentTimeMillis() - t0
+                        historyStore.record("框選解析", cfg.modelId, latency, res.data, true)
+                        removeViewSafe(hudView)
+                        hudView = null
+                        showAnswerCard(res.data, latency, croppedB64)
+                    }
+                    is ApiResult.Error -> {
+                        historyStore.record("框選解析", cfg.modelId, System.currentTimeMillis() - t0, res.message, false)
+                        showStatusHud(res.message, autoDismissMs = 4500L)
+                    }
+                }
+            }
+        }
+
+        regionSelectView = selector
+        addViewSafe(selector, fullScreenOverlayParams())
+        showStatusHud("框選解析：請拖曳框出目標區域", showCancel = true, cancelLabel = "取消")
+    }
+
+    private fun showAnswerCard(answerText: String, latencyMs: Long, sourceImageB64: String? = null) {
         removeViewSafe(answerCardView)
         val cfg = configStore.current
         val palette = MonochromeOverlayViews.paletteFor(context, cfg.overlayTheme)
@@ -1378,6 +1496,40 @@ class FloatingOverlayController(
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
         actionRow.addView(copyBtn)
+        if (sourceImageB64 != null) {
+            val transBtn = MonochromeOverlayViews.buildIconButton(
+                context = context,
+                iconRes = R.drawable.ic_autorenew,
+                label = "翻繁中",
+                bgColor = palette.surface,
+                fgColor = palette.fg,
+                borderColor = palette.border,
+                compact = true
+            ) {
+                removeViewSafe(answerCardView)
+                answerCardView = null
+                activeWorkflowJob?.cancel()
+                activeWorkflowJob = scope.launch {
+                    showStatusHud("正在翻譯為繁體中文…", showCancel = true, cancelLabel = "取消")
+                    val t0 = System.currentTimeMillis()
+                    when (val tr = DeepSeekClient.solveTranslate(configStore.current, sourceImageB64)) {
+                        is ApiResult.Success -> {
+                            val lat = System.currentTimeMillis() - t0
+                            historyStore.record("螢幕翻譯", configStore.current.modelId, lat, tr.data, true)
+                            removeViewSafe(hudView)
+                            hudView = null
+                            showAnswerCard(tr.data, lat, null)
+                        }
+                        is ApiResult.Error -> showStatusHud(tr.message, autoDismissMs = 4000L)
+                    }
+                }
+            }.apply {
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    marginEnd = MonochromeOverlayViews.dp(context, 8)
+                }
+            }
+            actionRow.addView(transBtn)
+        }
         actionRow.addView(closeBtn)
         card.addView(actionRow)
 
@@ -1387,10 +1539,18 @@ class FloatingOverlayController(
             cardWidth,
             WindowManager.LayoutParams.WRAP_CONTENT,
             overlayWindowType(),
-            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.CENTER
+        }
+        card.setOnTouchListener { _, ev ->
+            if (ev.action == MotionEvent.ACTION_OUTSIDE) {
+                removeViewSafe(answerCardView)
+                answerCardView = null
+                true
+            } else false
         }
         answerCardView = card
         addViewSafe(card, params)
@@ -1435,6 +1595,7 @@ class FloatingOverlayController(
         removeViewSafe(menuView); menuView = null
         removeViewSafe(choiceCounterView); choiceCounterView = null
         removeViewSafe(captureCanvasView); captureCanvasView = null
+        removeViewSafe(regionSelectView); regionSelectView = null
         removeViewSafe(hudView); hudView = null
         removeViewSafe(answerCardView); answerCardView = null
     }
