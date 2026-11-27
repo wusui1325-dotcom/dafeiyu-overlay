@@ -275,12 +275,9 @@ object DeepSeekClient {
         val validCards = config.envCards.filter { it.name.isNotBlank() }
         val elementsText = if (elements.isNotEmpty()) {
             buildString {
-                append("
-【無障礙互動元件清單（0..1000 歸一化座標）】
-")
+                append("\n【無障礙互動元件清單（0..1000 歸一化座標）】\n")
                 elements.forEach { el ->
-                    append("#${el.id} (${el.kind}) "${el.label}" center=(${el.normX},${el.normY})
-")
+                    append("#${el.id} (${el.kind}) \"${el.label}\" center=(${el.normX},${el.normY})\n")
                 }
             }
         } else ""
@@ -699,9 +696,7 @@ JSON 格式：
                 }
             )
             val pinNote = if (pinnedImages.isNotEmpty()) {
-                "【跨頁參考記憶】前面 ${pinnedImages.size} 張圖片為使用者釘選的參考頁面，最後一張為目前操作畫面，請結合參考頁資訊作答。
-
-"
+                "【跨頁參考記憶】前面 ${pinnedImages.size} 張圖片為使用者釘選的參考頁面，最後一張為目前操作畫面，請結合參考頁資訊作答。\n\n"
             } else ""
             put(
                 JSONObject().apply {
