@@ -35,6 +35,12 @@ class MainActivity : ComponentActivity() {
         onPermissionChangedCallback?.invoke()
     }
 
+    private val audioPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) {
+        onPermissionChangedCallback?.invoke()
+    }
+
     private val shizukuPermissionListener = Shizuku.OnRequestPermissionResultListener { requestCode, _ ->
         if (requestCode == ShizukuHelper.REQUEST_CODE) {
             onPermissionChangedCallback?.invoke()
@@ -116,7 +122,8 @@ class MainActivity : ComponentActivity() {
                         onToggleOverlay = toggleOverlay,
                         onStartOnboarding = { showOnboarding = true },
                         onRefreshPermissions = refreshPermissions,
-                        onRequestNotification = requestNotification
+                        onRequestNotification = requestNotification,
+                        onRequestAudio = { audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO) }
                     )
                 }
             }

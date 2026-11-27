@@ -30,6 +30,8 @@ enum class LongPressAction(val label: String) {
     AUTO_LOOP("全自動迴圈"),
     FREEFORM_AGENT("一句話指令"),
     SMART_REPLY("語氣智能回覆"),
+    SPATIAL_TRANSLATE("原位翻譯層"),
+    VOICE_AGENT("語音指揮螢幕"),
     HIDE("隱藏懸浮球")
 }
 

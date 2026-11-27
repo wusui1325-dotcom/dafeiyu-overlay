@@ -76,6 +76,14 @@ data class AgentCommandResult(
     val replyText: String
 )
 
+data class SpatialTranslationBlock(
+    val x1: Int,
+    val y1: Int,
+    val x2: Int,
+    val y2: Int,
+    val translated: String
+)
+
 object DeepSeekClient {
 
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
@@ -179,6 +187,94 @@ object DeepSeekClient {
             rawText = rawText,
             substitutedCards = used
         )
+    }
+
+    /**
+     * Spatial AR Translation: identifies foreign-language text blocks on screen with
+     * 0..1000 bounding boxes and translates each concisely into Traditional Chinese.
+     */
+    suspend fun solveSpatialTranslate(
+        config: AppConfig,
+        base64Jpeg: String
+    ): ApiResult<List<SpatialTranslationBlock>> {
+        val systemPrompt = """
+你是原位空間 AR 螢幕翻譯引擎。請找出截圖中所有主要的外文文字區塊（如英文、日文、韓文等按鈕、標題、段落、漫畫氣泡），
+將每塊精準簡潔地翻譯為繁體中文，並回傳其在截圖上的 0..1000 歸一化邊界框 [x1, y1, x2, y2]。
+只輸出嚴格合法的 JSON 陣列（最多 16 筆），格式如下：
+[
+  { "x1": 80, "y1": 210, "x2": 920, "y2": 290, "text": "翻譯後的繁體中文" }
+]
+規則：
+- 跳過原本就是中文、純數字或系統狀態列時間電量。
+- 確保 x1 < x2 且 y1 < y2，範圍皆在 0..1000 內。
+- 不要輸出 Markdown 圍欄或任何額外解釋。
+        """.trimIndent()
+        val userPrompt = "請定位並原位翻譯這張截圖中的外文文字區塊，只輸出 JSON 陣列。"
+        return when (val res = callVisionCompletion(config, systemPrompt, userPrompt, base64Jpeg)) {
+            is ApiResult.Success -> {
+                val blocks = parseSpatialBlocks(res.data)
+                if (blocks.isEmpty()) ApiResult.Error("未偵測到需要翻譯的外文區塊")
+                else ApiResult.Success(blocks)
+            }
+            is ApiResult.Error -> res
+        }
+    }
+
+    private fun parseSpatialBlocks(raw: String): List<SpatialTranslationBlock> {
+        var cleaned = raw.trim()
+        if (cleaned.startsWith("```")) {
+            cleaned = cleaned.removePrefix("```")
+            val nl = cleaned.indexOf('\n')
+            if (nl >= 0) cleaned = cleaned.substring(nl + 1)
+            cleaned = cleaned.removeSuffix("```").trim()
+        }
+        return try {
+            val start = cleaned.indexOf('[')
+            val end = cleaned.lastIndexOf(']')
+            if (start < 0 || end <= start) return emptyList()
+            val arr = JSONArray(cleaned.substring(start, end + 1))
+            buildList {
+                for (i in 0 until arr.length().coerceAtMost(16)) {
+                    val o = arr.optJSONObject(i) ?: continue
+                    val x1 = o.optInt("x1", -1).coerceIn(0, 990)
+                    val y1 = o.optInt("y1", -1).coerceIn(0, 990)
+                    val x2 = o.optInt("x2", -1).coerceIn(x1 + 10, 1000)
+                    val y2 = o.optInt("y2", -1).coerceIn(y1 + 10, 1000)
+                    val text = o.optString("text", "").trim()
+                    if (text.isNotEmpty() && o.optInt("x1", -1) >= 0) {
+                        add(SpatialTranslationBlock(x1, y1, x2, y2, text))
+                    }
+                }
+            }
+        } catch (_: Throwable) {
+            emptyList()
+        }
+    }
+
+    /**
+     * Multi-turn Visual Follow-Up Chat on the same captured screenshot/crop.
+     */
+    suspend fun solveVisualFollowUp(
+        config: AppConfig,
+        base64Jpeg: String,
+        priorTurns: List<Pair<String, String>>,
+        followUpQuestion: String
+    ): ApiResult<String> {
+        val systemPrompt =
+            "你是精煉高效的螢幕視覺對話助手。請結合截圖與先前的對話內容，" +
+                "以繁體中文直接、清晰地回答使用者的新追問，保持簡潔重點明確。"
+        val historyContext = buildString {
+            if (priorTurns.isNotEmpty()) {
+                append("【先前針對此畫面的問答紀錄】\n")
+                priorTurns.takeLast(4).forEach { (q, a) ->
+                    append("問：$q\n答：$a\n")
+                }
+                append("\n")
+            }
+            append("【使用者新追問】\n")
+            append(followUpQuestion)
+        }
+        return callVisionCompletion(config, systemPrompt, historyContext, base64Jpeg)
     }
 
     suspend fun solveTranslate(config: AppConfig, base64Jpeg: String): ApiResult<String> {

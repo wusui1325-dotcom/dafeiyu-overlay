@@ -16,6 +16,7 @@ data class PermissionSnapshot(
     val accessibilityGranted: Boolean,
     val notificationGranted: Boolean,
     val batteryOptimizationIgnored: Boolean,
+    val recordAudioGranted: Boolean,
     val shizukuStatus: ShizukuStatus
 ) {
     val coreReady: Boolean
@@ -30,6 +31,7 @@ object PermissionHelper {
             accessibilityGranted = isAccessibilityEnabled(context),
             notificationGranted = hasNotificationPermission(context),
             batteryOptimizationIgnored = isIgnoringBatteryOptimizations(context),
+            recordAudioGranted = hasRecordAudioPermission(context),
             shizukuStatus = ShizukuHelper.getStatus()
         )
     }
@@ -50,6 +52,13 @@ object PermissionHelper {
                 it.endsWith("/${DaFeiYuAccessibilityService::class.java.simpleName}", ignoreCase = true) ||
                 it.contains(DaFeiYuAccessibilityService::class.java.name, ignoreCase = true)
         }
+    }
+
+    fun hasRecordAudioPermission(context: Context): Boolean {
+        return ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
     }
 
     fun hasNotificationPermission(context: Context): Boolean {

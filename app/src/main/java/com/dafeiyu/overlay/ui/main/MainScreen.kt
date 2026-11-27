@@ -63,7 +63,8 @@ fun MainScreen(
     onToggleOverlay: () -> Unit,
     onStartOnboarding: () -> Unit,
     onRefreshPermissions: () -> Unit,
-    onRequestNotification: () -> Unit
+    onRequestNotification: () -> Unit,
+    onRequestAudio: () -> Unit
 ) {
     val navItems = remember {
         listOf(
@@ -176,7 +177,8 @@ fun MainScreen(
                     4 -> PermissionsTab(
                         permissions = permissions,
                         onRefresh = onRefreshPermissions,
-                        onRequestNotification = onRequestNotification
+                        onRequestNotification = onRequestNotification,
+                        onRequestAudio = onRequestAudio
                     )
                 }
             }

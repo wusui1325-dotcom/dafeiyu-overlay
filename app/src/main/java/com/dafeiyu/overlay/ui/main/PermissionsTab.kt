@@ -13,6 +13,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AccessibilityNew
 import androidx.compose.material.icons.rounded.BatteryChargingFull
 import androidx.compose.material.icons.rounded.Layers
+import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.Notifications
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Security
@@ -35,7 +36,8 @@ import com.dafeiyu.overlay.ui.components.MonoSectionHeader
 fun PermissionsTab(
     permissions: PermissionSnapshot,
     onRefresh: () -> Unit,
-    onRequestNotification: () -> Unit
+    onRequestNotification: () -> Unit,
+    onRequestAudio: () -> Unit
 ) {
     val context = LocalContext.current
 
@@ -105,6 +107,16 @@ fun PermissionsTab(
             actionIcon = Icons.Rounded.BatteryChargingFull,
             actionLabel = if (permissions.batteryOptimizationIgnored) "已豁免" else "豁免",
             onActionClick = { PermissionHelper.openBatteryOptimizationSettings(context) }
+        )
+
+        MonoPermissionRow(
+            icon = Icons.Rounded.Mic,
+            title = "麥克風語音權限 (選用)",
+            subtitle = "啟用「語音指揮螢幕」功能，開口即可讓 AI 代理人操作畫面",
+            granted = permissions.recordAudioGranted,
+            actionIcon = Icons.Rounded.Mic,
+            actionLabel = if (permissions.recordAudioGranted) "已允許" else "授予",
+            onActionClick = onRequestAudio
         )
 
         MonoPermissionRow(

@@ -22,7 +22,12 @@ import com.dafeiyu.overlay.MainActivity
 import com.dafeiyu.overlay.R
 import com.dafeiyu.overlay.data.AppConfig
 import android.graphics.drawable.GradientDrawable
+import android.os.Bundle
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.ScrollView
 import com.dafeiyu.overlay.data.ConfigStore
 import com.dafeiyu.overlay.data.HistoryStore
@@ -30,6 +35,8 @@ import com.dafeiyu.overlay.data.LongPressAction
 import com.dafeiyu.overlay.network.ApiResult
 import com.dafeiyu.overlay.network.DeepSeekClient
 import com.dafeiyu.overlay.network.AutoLoopAnalysis
+import com.dafeiyu.overlay.network.SpatialTranslationBlock
+import com.dafeiyu.overlay.system.PermissionHelper
 import com.dafeiyu.overlay.system.CapturedScreen
 import com.dafeiyu.overlay.system.DaFeiYuAccessibilityService
 import com.dafeiyu.overlay.system.UiElementSnapshot
@@ -64,6 +71,8 @@ class FloatingOverlayController(
     private var regionSelectView: MonochromeOverlayViews.RegionSelectCanvasView? = null
     private var commandBarView: View? = null
     private var smartReplyView: View? = null
+    private var spatialOverlayView: View? = null
+    private var speechRecognizer: SpeechRecognizer? = null
     private val pinnedScreenshots = mutableListOf<String>()
     private var longPressJob: Job? = null
 
@@ -467,6 +476,50 @@ class FloatingOverlayController(
         row4.addView(quickAskBtn)
         row4.addView(regionCropBtn)
         container.addView(row4)
+
+        // Row 4.5: Spatial AR Translation & Voice-to-Screen Agent
+        val row45 = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = MonochromeOverlayViews.dp(context, 8) }
+        }
+        val spatialBtn = MonochromeOverlayViews.buildIconButton(
+            context = context,
+            iconRes = R.drawable.ic_translate,
+            label = "原位翻譯",
+            bgColor = palette.surface,
+            fgColor = palette.fg,
+            borderColor = palette.border,
+            compact = true
+        ) {
+            hapticTick()
+            removeViewSafe(menuView); menuView = null
+            startSpatialTranslateWorkflow()
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = MonochromeOverlayViews.dp(context, 6)
+            }
+        }
+        val voiceBtn = MonochromeOverlayViews.buildIconButton(
+            context = context,
+            iconRes = R.drawable.ic_mic,
+            label = "語音指揮",
+            bgColor = palette.surface,
+            fgColor = palette.fg,
+            borderColor = palette.border,
+            compact = true
+        ) {
+            hapticTick()
+            removeViewSafe(menuView); menuView = null
+            startVoiceAgentWorkflow()
+        }.apply {
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        row45.addView(spatialBtn)
+        row45.addView(voiceBtn)
+        container.addView(row45)
 
         // Row 5: Cross-Page Visual Memory Pinning
         val pinRow = LinearLayout(context).apply {
@@ -1205,6 +1258,7 @@ class FloatingOverlayController(
         answerCardView?.visibility = View.INVISIBLE
         commandBarView?.visibility = View.INVISIBLE
         smartReplyView?.visibility = View.INVISIBLE
+        spatialOverlayView?.visibility = View.INVISIBLE
         captureCanvasView?.visibility = View.INVISIBLE
 
         delay(cfg.screenshotHideDelayMs.toLong())
@@ -1232,6 +1286,7 @@ class FloatingOverlayController(
         answerCardView?.visibility = View.INVISIBLE
         commandBarView?.visibility = View.INVISIBLE
         smartReplyView?.visibility = View.INVISIBLE
+        spatialOverlayView?.visibility = View.INVISIBLE
         captureCanvasView?.visibility = View.INVISIBLE
 
         delay(cfg.screenshotHideDelayMs.toLong())
@@ -1697,6 +1752,8 @@ class FloatingOverlayController(
             compact = true
         ) {
             removeViewSafe(smartReplyView); smartReplyView = null
+        removeViewSafe(spatialOverlayView); spatialOverlayView = null
+        stopVoiceRecognizer()
         }
         header.addView(icon)
         header.addView(title)
@@ -1716,6 +1773,8 @@ class FloatingOverlayController(
             ) {
                 hapticTick()
                 removeViewSafe(smartReplyView); smartReplyView = null
+        removeViewSafe(spatialOverlayView); spatialOverlayView = null
+        stopVoiceRecognizer()
                 runSmartReply(tone)
             }.apply {
                 layoutParams = LinearLayout.LayoutParams(
@@ -1738,6 +1797,8 @@ class FloatingOverlayController(
         container.setOnTouchListener { _, ev ->
             if (ev.action == MotionEvent.ACTION_OUTSIDE) {
                 removeViewSafe(smartReplyView); smartReplyView = null
+        removeViewSafe(spatialOverlayView); spatialOverlayView = null
+        stopVoiceRecognizer()
                 true
             } else false
         }
@@ -1805,6 +1866,8 @@ class FloatingOverlayController(
             compact = true
         ) {
             removeViewSafe(smartReplyView); smartReplyView = null
+        removeViewSafe(spatialOverlayView); spatialOverlayView = null
+        stopVoiceRecognizer()
         }
         header.addView(title)
         header.addView(closeBtn)
@@ -1826,6 +1889,8 @@ class FloatingOverlayController(
                 setOnClickListener {
                     hapticTick()
                     removeViewSafe(smartReplyView); smartReplyView = null
+        removeViewSafe(spatialOverlayView); spatialOverlayView = null
+        stopVoiceRecognizer()
                     scope.launch {
                         val a11y = DaFeiYuAccessibilityService.instance
                         val injected = a11y?.injectIntoBottomInputBox(replyText, cfg.inputMethod) == true
@@ -1854,11 +1919,183 @@ class FloatingOverlayController(
         card.setOnTouchListener { _, ev ->
             if (ev.action == MotionEvent.ACTION_OUTSIDE) {
                 removeViewSafe(smartReplyView); smartReplyView = null
+        removeViewSafe(spatialOverlayView); spatialOverlayView = null
+        stopVoiceRecognizer()
                 true
             } else false
         }
         smartReplyView = card
         addViewSafe(card, params)
+    }
+
+    // =========================================================================
+    // CREATIVE 4: Spatial AR In-Place Translation Overlay (原位翻譯層)
+    // =========================================================================
+    private fun startSpatialTranslateWorkflow() {
+        val cfg = configStore.current
+        if (!validateReadyForWorkflow(cfg)) return
+        activeWorkflowJob?.cancel()
+        removeAllTransientViews()
+
+        activeWorkflowJob = scope.launch {
+            val screen = captureCleanScreenWithMetrics(cfg)
+            if (screen == null) {
+                showStatusHud("截圖失敗：請確認無障礙服務已啟用", autoDismissMs = 3500L)
+                return@launch
+            }
+            showStatusHud("原位 AR 翻譯掃描中…", showCancel = true, cancelLabel = "取消")
+            val t0 = System.currentTimeMillis()
+            when (val res = DeepSeekClient.solveSpatialTranslate(cfg, screen.base64Jpeg)) {
+                is ApiResult.Success -> {
+                    val latency = System.currentTimeMillis() - t0
+                    historyStore.record("原位翻譯", cfg.modelId, latency, "已原位翻譯 ${res.data.size} 處外文區塊", true)
+                    showSpatialOverlay(res.data, screen.physicalWidth, screen.physicalHeight, latency)
+                }
+                is ApiResult.Error -> {
+                    historyStore.record("原位翻譯", cfg.modelId, System.currentTimeMillis() - t0, res.message, false)
+                    showStatusHud(res.message, autoDismissMs = 4000L)
+                }
+            }
+        }
+    }
+
+    private fun showSpatialOverlay(
+        blocks: List<SpatialTranslationBlock>,
+        physW: Int,
+        physH: Int,
+        latencyMs: Long
+    ) {
+        removeViewSafe(spatialOverlayView)
+        val cfg = configStore.current
+        val palette = MonochromeOverlayViews.paletteFor(context, cfg.overlayTheme)
+
+        val root = FrameLayout(context).apply {
+            setBackgroundColor(android.graphics.Color.argb(38, 0, 0, 0))
+            setOnClickListener {
+                removeViewSafe(spatialOverlayView); spatialOverlayView = null
+                removeViewSafe(hudView); hudView = null
+            }
+        }
+
+        val padH = MonochromeOverlayViews.dp(context, 8)
+        val padV = MonochromeOverlayViews.dp(context, 4)
+
+        blocks.forEach { b ->
+            val leftPx = ((b.x1 / 1000f) * physW).toInt().coerceIn(8, physW - 80)
+            val topPx = ((b.y1 / 1000f) * physH).toInt().coerceIn(8, physH - 60)
+            val boxW = (((b.x2 - b.x1) / 1000f) * physW).toInt().coerceIn(MonochromeOverlayViews.dp(context, 72), physW - leftPx - 8)
+
+            val badge = TextView(context).apply {
+                text = b.translated
+                setTextColor(palette.fg)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                background = MonochromeOverlayViews.roundedBg(context, palette.bg, palette.border, 1, 12)
+                setPadding(padH, padV, padH, padV)
+                elevation = MonochromeOverlayViews.dp(context, 4).toFloat()
+                maxWidth = boxW
+                setOnClickListener {
+                    hapticTick()
+                    DaFeiYuAccessibilityService.instance?.copyToClipboard(b.translated)
+                    showStatusHud("已複製：「${b.translated.take(20)}」", showCancel = true, cancelLabel = "關閉翻譯")
+                }
+            }
+            val lp = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                leftMargin = leftPx
+                topMargin = topPx
+            }
+            root.addView(badge, lp)
+        }
+
+        spatialOverlayView = root
+        addViewSafe(root, fullScreenOverlayParams())
+        showStatusHud("原位翻譯層 · ${blocks.size} 處 (${latencyMs}ms) · 點文字複製，點空白關閉", showCancel = true, cancelLabel = "關閉")
+    }
+
+    // =========================================================================
+    // CREATIVE 5: Voice-to-Screen AI Agent (語音指揮螢幕)
+    // =========================================================================
+    private fun startVoiceAgentWorkflow() {
+        val cfg = configStore.current
+        if (!validateReadyForWorkflow(cfg)) return
+        if (!PermissionHelper.hasRecordAudioPermission(context)) {
+            showStatusHud("請先在「權限」頁授予麥克風權限以使用語音指揮", autoDismissMs = 4000L)
+            return
+        }
+        if (!SpeechRecognizer.isRecognitionAvailable(context)) {
+            showStatusHud("此裝置未安裝語音辨識服務，已切換文字指令條", autoDismissMs = 2500L)
+            showFreeformCommandBar()
+            return
+        }
+
+        activeWorkflowJob?.cancel()
+        removeAllTransientViews()
+        stopVoiceRecognizer()
+
+        val recognizer = SpeechRecognizer.createSpeechRecognizer(context)
+        speechRecognizer = recognizer
+
+        recognizer.setRecognitionListener(object : RecognitionListener {
+            override fun onReadyForSpeech(params: Bundle?) {
+                showStatusHud("🎤 聆聽中…請說出要操作螢幕的指令", showCancel = true, cancelLabel = "取消")
+            }
+            override fun onBeginningOfSpeech() {}
+            override fun onRmsChanged(rmsdB: Float) {}
+            override fun onBufferReceived(buffer: ByteArray?) {}
+            override fun onEndOfSpeech() {
+                showStatusHud("🎤 辨識語音中…", showCancel = true, cancelLabel = "取消")
+            }
+            override fun onError(error: Int) {
+                stopVoiceRecognizer()
+                showStatusHud("語音辨識未取得內容 (code=$error)，請重試", autoDismissMs = 3000L)
+            }
+            override fun onResults(results: Bundle?) {
+                val spoken = results
+                    ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                    ?.firstOrNull()
+                    ?.trim()
+                    .orEmpty()
+                stopVoiceRecognizer()
+                if (spoken.isEmpty()) {
+                    showStatusHud("未辨識到語音指令", autoDismissMs = 2500L)
+                } else {
+                    hapticTick()
+                    runFreeformAgent(spoken)
+                }
+            }
+            override fun onPartialResults(partialResults: Bundle?) {
+                val partial = partialResults
+                    ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                    ?.firstOrNull()
+                    ?.trim()
+                    .orEmpty()
+                if (partial.isNotEmpty()) {
+                    showStatusHud("🎤 $partial", showCancel = true, cancelLabel = "取消")
+                }
+            }
+            override fun onEvent(eventType: Int, params: Bundle?) {}
+        })
+
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+        }
+        runCatching { recognizer.startListening(intent) }.onFailure {
+            stopVoiceRecognizer()
+            showStatusHud("啟動語音辨識失敗：${it.localizedMessage}", autoDismissMs = 3000L)
+        }
+    }
+
+    private fun stopVoiceRecognizer() {
+        runCatching {
+            speechRecognizer?.cancel()
+            speechRecognizer?.destroy()
+        }
+        speechRecognizer = null
     }
 
     private fun triggerLongPressShortcut() {
@@ -1870,6 +2107,8 @@ class FloatingOverlayController(
             LongPressAction.AUTO_LOOP -> startAutoLoopWorkflow()
             LongPressAction.FREEFORM_AGENT -> showFreeformCommandBar()
             LongPressAction.SMART_REPLY -> showSmartReplyTonePicker()
+            LongPressAction.SPATIAL_TRANSLATE -> startSpatialTranslateWorkflow()
+            LongPressAction.VOICE_AGENT -> startVoiceAgentWorkflow()
             LongPressAction.HIDE -> toggleOrbVisibility()
         }
     }
@@ -2088,6 +2327,76 @@ class FloatingOverlayController(
         actionRow.addView(closeBtn)
         card.addView(actionRow)
 
+        // Inline Multi-Turn Visual Follow-Up Chat on the same screenshot!
+        if (sourceImageB64 != null) {
+            val chatHistory = mutableListOf("畫面解析" to answerText)
+            val followRow = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { topMargin = MonochromeOverlayViews.dp(context, 10) }
+            }
+            val followInput = EditText(context).apply {
+                hint = "針對此畫面繼續追問…"
+                setHintTextColor(palette.fgMuted)
+                setTextColor(palette.fg)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                background = MonochromeOverlayViews.roundedBg(context, palette.surface, palette.border, 1, 16)
+                val pH = MonochromeOverlayViews.dp(context, 10)
+                val pV = MonochromeOverlayViews.dp(context, 8)
+                setPadding(pH, pV, pH, pV)
+                maxLines = 2
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    marginEnd = MonochromeOverlayViews.dp(context, 6)
+                }
+            }
+            val sendBtn = MonochromeOverlayViews.buildIconButton(
+                context = context,
+                iconRes = R.drawable.ic_send,
+                label = "",
+                bgColor = palette.accentBg,
+                fgColor = palette.accentFg,
+                compact = true
+            ) {
+                val q = followInput.text?.toString()?.trim().orEmpty()
+                if (q.isEmpty()) return@buildIconButton
+                hapticTick()
+                followInput.setText("")
+                bodyTv.text = "${bodyTv.text}\n\n▶ $q\n思考中…"
+                scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
+                activeWorkflowJob?.cancel()
+                activeWorkflowJob = scope.launch {
+                    val t0 = System.currentTimeMillis()
+                    when (
+                        val fRes = DeepSeekClient.solveVisualFollowUp(
+                            config = configStore.current,
+                            base64Jpeg = sourceImageB64,
+                            priorTurns = chatHistory.toList(),
+                            followUpQuestion = q
+                        )
+                    ) {
+                        is ApiResult.Success -> {
+                            chatHistory.add(q to fRes.data)
+                            historyStore.record("視覺追問", configStore.current.modelId, System.currentTimeMillis() - t0, fRes.data, true)
+                            val rebuilt = chatHistory.mapIndexed { i, pair ->
+                                if (i == 0) pair.second else "▶ ${pair.first}\n${pair.second}"
+                            }.joinToString("\n\n")
+                            bodyTv.text = rebuilt
+                            scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
+                        }
+                        is ApiResult.Error -> {
+                            bodyTv.text = "${bodyTv.text}\n(${fRes.message})"
+                        }
+                    }
+                }
+            }
+            followRow.addView(followInput)
+            followRow.addView(sendBtn)
+            card.addView(followRow)
+        }
+
         val cardWidth = (context.resources.displayMetrics.widthPixels - MonochromeOverlayViews.dp(context, 48))
             .coerceIn(MonochromeOverlayViews.dp(context, 260), MonochromeOverlayViews.dp(context, 360))
         val params = WindowManager.LayoutParams(
@@ -2153,6 +2462,8 @@ class FloatingOverlayController(
         removeViewSafe(regionSelectView); regionSelectView = null
         removeViewSafe(commandBarView); commandBarView = null
         removeViewSafe(smartReplyView); smartReplyView = null
+        removeViewSafe(spatialOverlayView); spatialOverlayView = null
+        stopVoiceRecognizer()
         removeViewSafe(hudView); hudView = null
         removeViewSafe(answerCardView); answerCardView = null
     }
