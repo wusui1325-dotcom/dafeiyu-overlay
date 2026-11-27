@@ -611,27 +611,63 @@ class DaFeiYuAccessibilityService : AccessibilityService() {
     }
 
     /**
+     * Clears input focus from the currently focused editable node. As long as an
+     * editable node keeps focus, the IME re-appears right after any hide attempt
+     * (the keyboard-fight loop), so focus must be dropped before/after hiding it.
+     */
+    fun clearFocusedInput(): Boolean {
+        return try {
+            val focused = findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+            if (focused != null && focused.isEditable) {
+                focused.performAction(AccessibilityNodeInfo.ACTION_CLEAR_FOCUS)
+            } else {
+                false
+            }
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    /**
      * Safely dismisses the Android soft keyboard ONLY when TYPE_INPUT_METHOD window
      * is confirmed visible, preventing accidental back-navigation out of the active app.
      */
     suspend fun dismissSoftKeyboardIfVisible(): Boolean {
         if (!isSoftKeyboardVisible()) return false
 
+        // Drop input focus first, otherwise the IME bounces back immediately
+        clearFocusedInput()
+        delay(140)
+        if (!isSoftKeyboardVisible()) return true
+
         // Primary: GLOBAL_ACTION_BACK closes the open IME first without leaving the app
         performGlobalAction(GLOBAL_ACTION_BACK)
         delay(280)
-        if (!isSoftKeyboardVisible()) return true
+        if (!isSoftKeyboardVisible()) {
+            clearFocusedInput()
+            return true
+        }
 
-        // Fallback: briefly hide IME via SoftKeyboardController then restore AUTO
+        // Fallback: briefly force-hide via SoftKeyboardController, then restore AUTO.
+        // Focus must be cleared again before restoring AUTO, or the keyboard re-pops
+        // the moment AUTO mode is re-enabled with an editable node still focused.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             runCatching {
                 softKeyboardController.showMode = SHOW_MODE_HIDDEN
                 delay(240)
+            }
+            clearFocusedInput()
+            delay(120)
+            runCatching {
                 softKeyboardController.showMode = SHOW_MODE_AUTO
             }
             delay(180)
         }
-        return !isSoftKeyboardVisible()
+        val hidden = !isSoftKeyboardVisible()
+        if (hidden) {
+            clearFocusedInput()
+        }
+        return hidden
     }
 
     fun copyToClipboard(text: String) {
