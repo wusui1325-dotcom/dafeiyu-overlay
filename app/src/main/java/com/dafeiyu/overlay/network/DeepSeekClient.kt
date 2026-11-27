@@ -310,8 +310,7 @@ object DeepSeekClient {
             var cleaned = raw.trim()
             if (cleaned.startsWith("```")) {
                 cleaned = cleaned.removePrefix("```")
-                val nl = cleaned.indexOf('
-')
+                val nl = cleaned.indexOf('\n')
                 if (nl >= 0) cleaned = cleaned.substring(nl + 1)
                 cleaned = cleaned.removeSuffix("```").trim()
             }
@@ -372,8 +371,7 @@ object DeepSeekClient {
         var cleaned = raw.trim()
         if (cleaned.startsWith("```")) {
             cleaned = cleaned.removePrefix("```")
-            val nl = cleaned.indexOf('
-')
+            val nl = cleaned.indexOf('\n')
             if (nl >= 0) cleaned = cleaned.substring(nl + 1)
             cleaned = cleaned.removeSuffix("```").trim()
         }
