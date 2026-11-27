@@ -635,12 +635,17 @@ class DaFeiYuAccessibilityService : AccessibilityService() {
     suspend fun dismissSoftKeyboardIfVisible(): Boolean {
         if (!isSoftKeyboardVisible()) return false
 
-        // Drop input focus first, otherwise the IME bounces back immediately
+        // Clearing input focus usually hides the IME on its own. Poll until the
+        // hide animation settles: if we fired GLOBAL_ACTION_BACK while the IME
+        // window is listed but already animating away, the BACK lands on the
+        // foreground app instead and navigates it back (sometimes to the launcher).
         clearFocusedInput()
-        delay(140)
-        if (!isSoftKeyboardVisible()) return true
+        repeat(8) {
+            delay(100)
+            if (!isSoftKeyboardVisible()) return true
+        }
 
-        // Primary: GLOBAL_ACTION_BACK closes the open IME first without leaving the app
+        // Keyboard genuinely stuck (not focus-driven): BACK closes an open IME first
         performGlobalAction(GLOBAL_ACTION_BACK)
         delay(280)
         if (!isSoftKeyboardVisible()) {
