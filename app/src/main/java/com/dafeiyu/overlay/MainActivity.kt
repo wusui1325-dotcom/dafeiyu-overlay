@@ -96,7 +96,6 @@ class MainActivity : ComponentActivity() {
                     OnboardingScreen(
                         config = config,
                         configStore = configStore,
-                        historyStore = historyStore,
                         permissions = permissions,
                         onRequestNotification = requestNotification,
                         onFinish = { launchOverlay ->
