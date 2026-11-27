@@ -36,6 +36,7 @@ import com.dafeiyu.overlay.data.LongPressAction
 import com.dafeiyu.overlay.network.ApiResult
 import com.dafeiyu.overlay.network.DeepSeekClient
 import com.dafeiyu.overlay.network.AutoLoopAnalysis
+import com.dafeiyu.overlay.network.AutoLoopTarget
 import com.dafeiyu.overlay.network.SpatialTranslationBlock
 import com.dafeiyu.overlay.system.PermissionHelper
 import com.dafeiyu.overlay.system.CapturedScreen
@@ -1099,11 +1100,23 @@ class FloatingOverlayController(
 
                 // Step 3 & Step 4 inner loop: complete unfinished items top-to-bottom, left-to-right
                 val completedInRound = mutableListOf<String>()
+                // Deterministic per-page guard: the analyzer sometimes re-lists an
+                // already-handled item (different wording, unreadable checked state,
+                // or a menu it opened itself), which made the loop toggle the same
+                // option / open-close the same menu forever.
+                val processedTargetKeys = mutableSetOf<String>()
                 var pageSteps = 0
 
                 while (analysis.pendingItems.isNotEmpty() && pageSteps < cfg.autoLoopMaxItemsPerPage) {
+                    val actionableItems = analysis.pendingItems.filterNot { item ->
+                        item.targets.all { autoLoopTargetKey(it) in processedTargetKeys }
+                    }
+                    if (actionableItems.isEmpty()) {
+                        analysis = analysis.copy(pendingItems = emptyList())
+                        break
+                    }
                     pageSteps++
-                    val item = analysis.pendingItems.first()
+                    val item = actionableItems.first()
                     showStatusHud(
                         "第 $round 輪 · 步驟 3 處理「${item.summary.take(16)}」",
                         showCancel = true,
@@ -1128,9 +1141,11 @@ class FloatingOverlayController(
                         if (solved.finalText.isNotBlank()) {
                             showTapPulse(pt.x, pt.y)
                             a11y.tapAndInputText(pt.x, pt.y, solved.finalText, cfg.inputMethod)
+                            processedTargetKeys.add(autoLoopTargetKey(target))
                             recordStep(stepHistory, "已填寫輸入框「${item.summary}」，內容：「${solved.finalText.take(48)}」")
                         } else {
                             a11y.performTap(pt.x, pt.y)
+                            processedTargetKeys.add(autoLoopTargetKey(target))
                             recordStep(stepHistory, "已點擊輸入框「${item.summary}」（無需填入文字）")
                         }
                         // Drop input focus right away so the IME cannot bounce back
@@ -1146,6 +1161,8 @@ class FloatingOverlayController(
                         var menuLikelyOpened = false
                         item.targets.forEachIndexed { idx, target ->
                             if (menuLikelyOpened) return@forEachIndexed
+                            // Skip targets this page already tapped (re-listed by the analyzer)
+                            if (autoLoopTargetKey(target) in processedTargetKeys) return@forEachIndexed
                             val pt = a11y.resolvePreciseTapPoint(
                                 elementId = target.elementId,
                                 normX = target.x,
@@ -1157,6 +1174,7 @@ class FloatingOverlayController(
                             )
                             showTapPulse(pt.x, pt.y)
                             a11y.performTap(pt.x, pt.y)
+                            processedTargetKeys.add(autoLoopTargetKey(target))
                             if (idx < item.targets.lastIndex) {
                                 delay(cfg.multiClickIntervalMs.toLong())
                                 // A tap that opens a popup menu/dropdown invalidates the
@@ -1314,6 +1332,14 @@ class FloatingOverlayController(
             stepHistory.removeAt(0)
         }
     }
+
+    /**
+     * Coarse coordinate-bucket key for an analyzer target (elementIds are reassigned
+     * on every scan, so they cannot identify a target across scans). 2.5% buckets
+     * absorb small coordinate jitter while keeping distinct options apart.
+     */
+    private fun autoLoopTargetKey(target: AutoLoopTarget): String =
+        "xy:${target.x / 25},${target.y / 25}"
 
     /**
      * Compares the interactive element tree before/after a tap. A popup menu, dropdown,
